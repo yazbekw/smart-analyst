@@ -1,1 +1,85 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Smart Market Analyst</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
 
+<header class="topbar">
+  <div class="brand">
+    <span class="dot"></span>
+    <h1>Smart Market Analyst</h1>
+  </div>
+  <div class="controls">
+    <span id="status-badge" class="badge">● متصل</span>
+    <button id="btn-scan" class="btn primary">🔍 فحص الآن</button>
+    <span class="interval">كل {{ interval }} دقيقة</span>
+  </div>
+</header>
+
+<main class="container">
+
+  <section class="stats-grid">
+    <div class="stat">
+      <div class="stat-label">إشارات نشطة</div>
+      <div class="stat-value" id="stat-active">—</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">أحداث شاذة (آخر ساعة)</div>
+      <div class="stat-value" id="stat-anomalies">—</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">آخر فحص</div>
+      <div class="stat-value small" id="stat-last-scan">—</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">حالة النظام</div>
+      <div class="stat-value" id="stat-status">🟢</div>
+    </div>
+  </section>
+
+  <section class="tabs">
+    <button class="tab active" data-tab="overview">📊 نظرة عامة</button>
+    <button class="tab" data-tab="active">🎯 الإشارات النشطة</button>
+    <button class="tab" data-tab="events">📜 سجل الأحداث</button>
+    <button class="tab" data-tab="anomalies">⚡ الشواذ</button>
+  </section>
+
+  <section class="tab-content active" id="tab-overview">
+    <div class="cards" id="cards"></div>
+    <div class="panel">
+      <h2>🎯 الإشارات الأخيرة</h2>
+      <div id="signals-table"></div>
+    </div>
+  </section>
+
+  <section class="tab-content" id="tab-active">
+    <div id="active-signals"></div>
+  </section>
+
+  <section class="tab-content" id="tab-events">
+    <div class="panel">
+      <h2>📜 آخر 50 حدث</h2>
+      <div id="events-list"></div>
+    </div>
+  </section>
+
+  <section class="tab-content" id="tab-anomalies">
+    <div class="panel">
+      <h2>⚡ الأحداث الشاذة</h2>
+      <div id="anomalies-list"></div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <span>يتم التحديث كل 30 ثانية • <span id="last-update">—</span></span>
+</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
