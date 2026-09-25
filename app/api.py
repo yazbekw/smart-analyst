@@ -11,14 +11,13 @@ from app.engine import analyze_symbol
 from app.database import get_client, get_recent_signals, get_latest_snapshots
 from app.collector import fetch_ohlcv
 from app.lifecycle import get_active_signals
+from app.paper import get_paper_stats
+from app.regime import detect_regime
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 
-# ============================================================
-# Lifespan — يشغّل الـ scheduler عند بدء التطبيق
-# ============================================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     start_scheduler()
@@ -29,22 +28,12 @@ async def lifespan(app: FastAPI):
     yield
 
 
-# ============================================================
-# تعريف FastAPI app — يجب أن يكون قبل أي @app.get
-# ============================================================
 app = FastAPI(title="Smart Market Analyst", lifespan=lifespan)
-
-
-# Mount static files
-app.mount(
-    "/static",
-    StaticFiles(directory=str(BASE_DIR / "static")),
-    name="static",
-)
+app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
 
 # ============================================================
-# Routes
+# Pages
 # ============================================================
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
@@ -55,6 +44,9 @@ async def dashboard(request: Request):
     })
 
 
+# ============================================================
+# Core APIs
+# ============================================================
 @app.get("/api/status")
 async def api_status():
     return {
@@ -82,9 +74,8 @@ async def api_active_signals():
 @app.get("/api/anomalies")
 async def api_anomalies(limit: int = 30):
     res = (
-        get_client().table("anomalies")
-        .select("*").order("created_at", desc=True)
-        .limit(limit).execute()
+        get_client().table("anomalies").select("*")
+        .order("created_at", desc=True).limit(limit).execute()
     )
     return res.data or []
 
@@ -92,18 +83,66 @@ async def api_anomalies(limit: int = 30):
 @app.get("/api/signal-events")
 async def api_signal_events(limit: int = 50):
     res = (
-        get_client().table("signal_events")
-        .select("*").order("created_at", desc=True)
-        .limit(limit).execute()
+        get_client().table("signal_events").select("*")
+        .order("created_at", desc=True).limit(limit).execute()
     )
     return res.data or []
 
 
+# ============================================================
+# Paper Trading (NEW)
+# ============================================================
+@app.get("/api/paper/stats")
+async def api_paper_stats():
+    return get_paper_stats()
+
+
+@app.get("/api/paper/trades")
+async def api_paper_trades(limit: int = 50, status: str = None):
+    q = (
+        get_client().table("paper_trades").select("*")
+        .order("opened_at", desc=True).limit(limit)
+    )
+    if status:
+        q = q.eq("status", status)
+    return q.execute().data or []
+
+
+# ============================================================
+# Regime (NEW)
+# ============================================================
+@app.get("/api/regime")
+async def api_regime():
+    result = {}
+    for sym in SYMBOLS:
+        try:
+            df_1h = fetch_ohlcv(sym, "1h", limit=300)
+            result[sym] = detect_regime(df_1h)
+        except Exception as e:
+            result[sym] = {"regime": "unknown", "error": str(e)}
+    return result
+
+
+# ============================================================
+# Backtest (NEW)
+# ============================================================
+@app.post("/api/backtest/{symbol:path}")
+async def api_backtest(symbol: str, timeframe: str = "1h", lookback: int = 200):
+    from app.backtest import backtest_symbol
+    try:
+        df = fetch_ohlcv(symbol, timeframe, limit=1000)
+        return backtest_symbol(symbol, df, lookback=lookback)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ============================================================
+# OHLCV & Analysis
+# ============================================================
 @app.get("/api/ohlcv/{symbol:path}")
 async def api_ohlcv(symbol: str, timeframe: str = "15m", limit: int = 100):
     try:
-        df = fetch_ohlcv(symbol, timeframe, limit=limit)
-        return df.to_dict("records")
+        return fetch_ohlcv(symbol, timeframe, limit=limit).to_dict("records")
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -121,25 +160,3 @@ async def api_analyze(symbol: str):
 async def api_scan():
     await scan_all()
     return {"status": "done"}
-
-@app.get("/api/paper/stats")
-async def api_paper_stats():
-    from app.paper import get_paper_stats
-    return get_paper_stats()
-
-
-@app.get("/api/paper/trades")
-async def api_paper_trades(limit: int = 50):
-    res = (
-        get_client().table("paper_trades")
-        .select("*").order("opened_at", desc=True)
-        .limit(limit).execute()
-    )
-    return res.data or []
-
-
-@app.post("/api/backtest/{symbol:path}")
-async def api_backtest(symbol: str, timeframe: str = "1h", lookback: int = 200):
-    from app.backtest import backtest_symbol
-    df = fetch_ohlcv(symbol, timeframe, limit=1000)
-    return backtest_symbol(symbol, df, lookback=lookback)
