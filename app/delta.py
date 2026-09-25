@@ -1,7 +1,7 @@
 from app.database import get_client
 
 
-def def get_previous_snapshot(symbol: str) -> dict | None:
+def get_previous_snapshot(symbol: str) -> dict | None:
     res = (
         get_client()
         .table("snapshots")
