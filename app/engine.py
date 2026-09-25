@@ -1,4 +1,4 @@
-import pandas_ta as ta
+import pandas_ta_classic as ta
 from app.collector import fetch_ohlcv, fetch_orderbook, fetch_trades
 from app.signals import *
 from app.database import save_snapshot
