@@ -18,6 +18,11 @@ def _atr(df, length=14):
 
 
 def calculate_levels(df_15m, state):
+    """
+    حساب المستويات مع R:R = 1:2
+    SL = 1.0 ATR (مخاطرة أقل)
+    TP1 = 2.0 ATR (مكافأة أكثر)
+    """
     try:
         price = float(df_15m["close"].iloc[-1])
         atr = _atr(df_15m)
@@ -27,17 +32,17 @@ def calculate_levels(df_15m, state):
         if "BUY" in state:
             entry_low = price - atr * 0.3
             entry_high = price + atr * 0.2
-            sl = price - atr * 1.5
-            tp1 = price + atr * 1.5
-            tp2 = price + atr * 3.0
-            tp3 = price + atr * 5.0
+            sl = price - atr * 1.0
+            tp1 = price + atr * 2.0
+            tp2 = price + atr * 3.5
+            tp3 = price + atr * 5.5
         elif "SELL" in state:
             entry_low = price - atr * 0.2
             entry_high = price + atr * 0.3
-            sl = price + atr * 1.5
-            tp1 = price - atr * 1.5
-            tp2 = price - atr * 3.0
-            tp3 = price - atr * 5.0
+            sl = price + atr * 1.0
+            tp1 = price - atr * 2.0
+            tp2 = price - atr * 3.5
+            tp3 = price - atr * 5.5
         else:
             return None
 
@@ -81,7 +86,6 @@ def analyze_symbol(symbol: str, df_btc=None) -> dict:
     regime = regime_info["regime"]
     mult = regime_multipliers(regime)
 
-    # ===== جمع النقاط الخام =====
     raw = {
         "trend": 0, "momentum": 0, "volume": 0,
         "orderflow": 0, "structure": 0, "context": 0, "risk": 0,
@@ -89,14 +93,16 @@ def analyze_symbol(symbol: str, df_btc=None) -> dict:
     reasons = []
     warnings = []
 
-    # Trend
+    # ===== Trend =====
     for df, tf in [(df_4h, "4H"), (df_1h, "1H")]:
         s, r = _safe_call(sig_price_above_ema200, df)
         raw["trend"] += s
         if r: reasons.append(f"[{tf}] {r}")
+
         s, r = _safe_call(sig_ema50_above_ema200, df)
         raw["trend"] += s
         if r and tf == "1H": reasons.append(f"[{tf}] {r}")
+
         s, r = _safe_call(sig_ema50_slope_up, df)
         raw["trend"] += s
         if r and tf == "1H": reasons.append(f"[{tf}] {r}")
@@ -109,47 +115,51 @@ def analyze_symbol(symbol: str, df_btc=None) -> dict:
     raw["trend"] += s
     if r: reasons.append(f"[1H] {r}")
 
-    # Momentum
+    # ===== Momentum =====
     for fn in (sig_macd_cross, sig_rsi_zone, sig_roc_positive):
         s, r = _safe_call(fn, df_15m)
         raw["momentum"] += s
         if r: reasons.append(f"[15M] {r}")
 
-    # Volume
+    # ===== Volume =====
     s, r = _safe_call(sig_volume_ratio, df_15m)
     raw["volume"] += s
     if r: reasons.append(f"[15M] {r}")
+
     s, r = _safe_call(sig_volume_price_agreement, df_15m)
     raw["volume"] += s
     if r: reasons.append(f"[15M] {r}")
 
-    # Order Flow
+    # ===== Order Flow =====
     s, r = _safe_call(sig_orderbook_imbalance, ob)
     raw["orderflow"] += s
     if r: reasons.append(r)
+
     s, r = _safe_call(sig_taker_buy_pressure, trades)
     raw["orderflow"] += s
     if r: reasons.append(r)
 
-    # Structure
+    # ===== Structure =====
     s, r = _safe_call(sig_broke_resistance, df_15m)
     raw["structure"] += s
     if r: reasons.append(f"[15M] {r}")
+
     s, r = _safe_call(sig_near_support, df_15m)
     raw["structure"] += s
     if r: reasons.append(f"[15M] {r}")
 
-    # Patterns (جديد)
+    # ===== Patterns =====
     p_score, p_reasons, p_warnings = scan_patterns(df_15m)
     raw["structure"] += p_score
     reasons.extend(p_reasons)
     warnings.extend(p_warnings)
 
-    # Context
+    # ===== Context =====
     if df_btc is not None and symbol != BTC_REFERENCE:
         s, r = _safe_call(sig_btc_trend, df_btc)
         raw["context"] += s
         if r: reasons.append(r)
+
         s, r = _safe_call(sig_relative_strength, df_15m, df_btc)
         raw["context"] += s
         if r: reasons.append(r)
@@ -181,6 +191,20 @@ def analyze_symbol(symbol: str, df_btc=None) -> dict:
     breakdown["risk"] += s
     if r: warnings.append(r)
 
+    # ============================================================
+    # Warnings تلقائية (جديد)
+    # ============================================================
+    if breakdown.get("orderflow", 0) <= -3:
+        warnings.append(f"Order Flow سلبي ({breakdown['orderflow']}) — بائعون يسيطرون")
+    if breakdown.get("volume", 0) <= -1:
+        warnings.append("الحجم أقل من المتوسط — إشارة ضعيفة")
+    if regime_info.get("regime") == "ranging":
+        warnings.append("السوق جانبي — انتظر اختراقاً واضحاً")
+    if regime_info.get("adx", 0) < 20 and regime_info.get("adx", 0) > 0:
+        warnings.append(f"ADX ضعيف ({regime_info['adx']}) — لا يوجد اتجاه قوي")
+    if regime_info.get("regime") == "high_vol":
+        warnings.append("تقلب عالٍ — قلل حجم الصفقة")
+
     score = sum(breakdown.values())
     state = _state(score)
     price = float(df_15m["close"].iloc[-1])
@@ -203,8 +227,10 @@ def analyze_symbol(symbol: str, df_btc=None) -> dict:
             "context_score": breakdown["context"],
             "risk_score": breakdown["risk"],
             "total_score": int(score), "state": state,
-            "details": {"reasons": reasons, "warnings": warnings,
-                        "levels": levels, "regime": regime_info},
+            "details": {
+                "reasons": reasons, "warnings": warnings,
+                "levels": levels, "regime": regime_info,
+            },
         })
     except Exception as e:
         print(f"[save_snapshot {symbol}] {e}")
