@@ -14,6 +14,31 @@ from app.collector import fetch_ohlcv
 BASE_DIR = Path(__file__).resolve().parent.parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
+@app.get("/api/active-signals")
+async def api_active_signals():
+    from app.lifecycle import get_active_signals
+    return get_active_signals()
+
+
+@app.get("/api/signal-events/{signal_id}")
+async def api_signal_events(signal_id: int):
+    from app.database import get_client
+    res = (
+        get_client().table("signal_events")
+        .select("*").eq("signal_id", signal_id)
+        .order("created_at", desc=True).limit(100).execute()
+    )
+    return res.data or []
+
+
+@app.get("/api/anomalies")
+async def api_anomalies(limit: int = 30):
+    from app.database import get_client
+    res = (
+        get_client().table("anomalies")
+        .select("*").order("created_at", desc=True).limit(limit).execute()
+    )
+    return res.data or []
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
