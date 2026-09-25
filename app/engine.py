@@ -1,6 +1,8 @@
-import pandas_ta_classic as ta
+import pandas_ta as ta
 from app.collector import fetch_ohlcv, fetch_orderbook, fetch_trades
 from app.signals import *
+from app.patterns import scan_patterns
+from app.regime import detect_regime, regime_multipliers
 from app.database import save_snapshot
 from app.config import BTC_REFERENCE
 
@@ -16,7 +18,6 @@ def _atr(df, length=14):
 
 
 def calculate_levels(df_15m, state):
-    """حساب مستويات الدخول/الوقف/الأهداف بناءً على ATR"""
     try:
         price = float(df_15m["close"].iloc[-1])
         atr = _atr(df_15m)
@@ -58,108 +59,105 @@ def calculate_levels(df_15m, state):
 
 
 def _safe_call(fn, *args, **kwargs):
-    """استدعاء آمن لدوال الإشارات — يعيد (0, None) عند الخطأ"""
     try:
-        result = fn(*args, **kwargs)
-        if result is None or len(result) != 2:
+        r = fn(*args, **kwargs)
+        if r is None or len(r) != 2:
             return 0, None
-        return result
+        return r
     except Exception as e:
-        print(f"[signal error: {fn.__name__}] {e}")
+        print(f"[signal {fn.__name__}] {e}")
         return 0, None
 
 
 def analyze_symbol(symbol: str, df_btc=None) -> dict:
-    """التحليل الكامل لرمز واحد"""
-
-    # ===== سحب البيانات =====
     df_4h = fetch_ohlcv(symbol, "4h", limit=300)
     df_1h = fetch_ohlcv(symbol, "1h", limit=300)
     df_15m = fetch_ohlcv(symbol, "15m", limit=300)
     ob = fetch_orderbook(symbol)
     trades = fetch_trades(symbol, limit=200)
 
-    score = 0
-    reasons = []
-    warnings = []
-    breakdown = {
+    # ===== Regime Detection =====
+    regime_info = detect_regime(df_1h)
+    regime = regime_info["regime"]
+    mult = regime_multipliers(regime)
+
+    # ===== جمع النقاط الخام =====
+    raw = {
         "trend": 0, "momentum": 0, "volume": 0,
         "orderflow": 0, "structure": 0, "context": 0, "risk": 0,
     }
+    reasons = []
+    warnings = []
 
-    # ===== Trend =====
+    # Trend
     for df, tf in [(df_4h, "4H"), (df_1h, "1H")]:
         s, r = _safe_call(sig_price_above_ema200, df)
-        score += s; breakdown["trend"] += s
+        raw["trend"] += s
         if r: reasons.append(f"[{tf}] {r}")
-
         s, r = _safe_call(sig_ema50_above_ema200, df)
-        score += s; breakdown["trend"] += s
+        raw["trend"] += s
         if r and tf == "1H": reasons.append(f"[{tf}] {r}")
-
         s, r = _safe_call(sig_ema50_slope_up, df)
-        score += s; breakdown["trend"] += s
+        raw["trend"] += s
         if r and tf == "1H": reasons.append(f"[{tf}] {r}")
 
     s, r = _safe_call(sig_price_above_ema20, df_15m)
-    score += s; breakdown["trend"] += s
+    raw["trend"] += s
     if r: reasons.append(f"[15M] {r}")
 
     s, r = _safe_call(sig_adx_strength, df_1h)
-    score += s; breakdown["trend"] += s
+    raw["trend"] += s
     if r: reasons.append(f"[1H] {r}")
 
-    # ===== Momentum =====
-    s, r = _safe_call(sig_macd_cross, df_15m)
-    score += s; breakdown["momentum"] += s
-    if r: reasons.append(f"[15M] {r}")
+    # Momentum
+    for fn in (sig_macd_cross, sig_rsi_zone, sig_roc_positive):
+        s, r = _safe_call(fn, df_15m)
+        raw["momentum"] += s
+        if r: reasons.append(f"[15M] {r}")
 
-    s, r = _safe_call(sig_rsi_zone, df_15m)
-    score += s; breakdown["momentum"] += s
-    if r: reasons.append(f"[15M] {r}")
-
-    s, r = _safe_call(sig_roc_positive, df_15m)
-    score += s; breakdown["momentum"] += s
-    if r: reasons.append(f"[15M] {r}")
-
-    # ===== Volume =====
+    # Volume
     s, r = _safe_call(sig_volume_ratio, df_15m)
-    score += s; breakdown["volume"] += s
+    raw["volume"] += s
     if r: reasons.append(f"[15M] {r}")
-
     s, r = _safe_call(sig_volume_price_agreement, df_15m)
-    score += s; breakdown["volume"] += s
+    raw["volume"] += s
     if r: reasons.append(f"[15M] {r}")
 
-    # ===== Order Flow =====
+    # Order Flow
     s, r = _safe_call(sig_orderbook_imbalance, ob)
-    score += s; breakdown["orderflow"] += s
+    raw["orderflow"] += s
     if r: reasons.append(r)
-
     s, r = _safe_call(sig_taker_buy_pressure, trades)
-    score += s; breakdown["orderflow"] += s
+    raw["orderflow"] += s
     if r: reasons.append(r)
 
-    # ===== Structure =====
+    # Structure
     s, r = _safe_call(sig_broke_resistance, df_15m)
-    score += s; breakdown["structure"] += s
+    raw["structure"] += s
     if r: reasons.append(f"[15M] {r}")
-
     s, r = _safe_call(sig_near_support, df_15m)
-    score += s; breakdown["structure"] += s
+    raw["structure"] += s
     if r: reasons.append(f"[15M] {r}")
 
-    # ===== Context =====
+    # Patterns (جديد)
+    p_score, p_reasons, p_warnings = scan_patterns(df_15m)
+    raw["structure"] += p_score
+    reasons.extend(p_reasons)
+    warnings.extend(p_warnings)
+
+    # Context
     if df_btc is not None and symbol != BTC_REFERENCE:
         s, r = _safe_call(sig_btc_trend, df_btc)
-        score += s; breakdown["context"] += s
+        raw["context"] += s
         if r: reasons.append(r)
-
         s, r = _safe_call(sig_relative_strength, df_15m, df_btc)
-        score += s; breakdown["context"] += s
+        raw["context"] += s
         if r: reasons.append(r)
 
-    # ===== تحديد الحالة الأولية =====
+    # ===== تطبيق مضاعفات Regime =====
+    breakdown = {k: int(round(v * mult.get(k, 1.0))) for k, v in raw.items()}
+    score = sum(breakdown.values())
+
     def _state(s):
         if s >= 15: return "STRONG BUY SETUP"
         if s >= 8: return "BUY SETUP"
@@ -169,48 +167,34 @@ def analyze_symbol(symbol: str, df_btc=None) -> dict:
         return "NO TRADE"
 
     state = _state(score)
-
-    # ===== حساب المستويات =====
     levels = calculate_levels(df_15m, state) if state != "NO TRADE" else None
 
     if levels:
-        s, r = _safe_call(
-            sig_rr_ratio,
-            df_15m["close"].iloc[-1],
-            levels["stop_loss"],
-            levels["tp1"],
-        )
-        score += s; breakdown["risk"] += s
+        s, r = _safe_call(sig_rr_ratio, df_15m["close"].iloc[-1],
+                          levels["stop_loss"], levels["tp1"])
+        breakdown["risk"] += s
         if r:
-            if s < 0:
-                warnings.append(r)
-            else:
-                reasons.append(r)
+            if s < 0: warnings.append(r)
+            else: reasons.append(r)
 
     s, r = _safe_call(sig_resistance_close, df_15m)
-    score += s; breakdown["risk"] += s
+    breakdown["risk"] += s
     if r: warnings.append(r)
 
-    # ===== إعادة التقييم بعد Risk =====
+    score = sum(breakdown.values())
     state = _state(score)
     price = float(df_15m["close"].iloc[-1])
 
     result = {
-        "symbol": symbol,
-        "price": round(price, 6),
-        "score": int(score),
-        "state": state,
-        "breakdown": breakdown,
-        "reasons": reasons,
-        "warnings": warnings,
-        "levels": levels,
+        "symbol": symbol, "price": round(price, 6),
+        "score": int(score), "state": state,
+        "breakdown": breakdown, "reasons": reasons, "warnings": warnings,
+        "levels": levels, "regime": regime_info,
     }
 
-    # ===== الحفظ في Supabase =====
     try:
         save_snapshot({
-            "symbol": symbol,
-            "price": price,
+            "symbol": symbol, "price": price,
             "trend_score": breakdown["trend"],
             "momentum_score": breakdown["momentum"],
             "volume_score": breakdown["volume"],
@@ -218,13 +202,9 @@ def analyze_symbol(symbol: str, df_btc=None) -> dict:
             "structure_score": breakdown["structure"],
             "context_score": breakdown["context"],
             "risk_score": breakdown["risk"],
-            "total_score": int(score),
-            "state": state,
-            "details": {
-                "reasons": reasons,
-                "warnings": warnings,
-                "levels": levels,
-            },
+            "total_score": int(score), "state": state,
+            "details": {"reasons": reasons, "warnings": warnings,
+                        "levels": levels, "regime": regime_info},
         })
     except Exception as e:
         print(f"[save_snapshot {symbol}] {e}")
