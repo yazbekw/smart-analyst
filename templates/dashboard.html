@@ -10,75 +10,144 @@
 
 <header class="topbar">
   <div class="brand">
-    <span class="dot"></span>
-    <h1>Smart Market Analyst</h1>
+    <div class="brand-logo">SMA</div>
+    <div class="brand-text">
+      <span class="brand-title">Smart Market Analyst</span>
+      <span class="brand-sub">محلل السوق الذكي</span>
+    </div>
   </div>
-  <div class="controls">
-    <span id="status-badge" class="badge">● متصل</span>
-    <button id="btn-scan" class="btn primary">🔍 فحص الآن</button>
-    <span class="interval">كل {{ interval }} دقيقة</span>
+  <div class="topbar-right">
+    <span class="live-status"><span class="live-dot"></span> مباشر</span>
+    <span id="last-update" class="last-update">—</span>
+    <button id="btn-scan" class="btn primary">⟳ فحص الآن</button>
   </div>
 </header>
 
+<section class="stats-bar">
+  <div class="stat-item">
+    <div class="stat-label">إشارات نشطة</div>
+    <div class="stat-value" id="stat-active">0</div>
+  </div>
+  <div class="stat-item">
+    <div class="stat-label">رأس المال الافتراضي</div>
+    <div class="stat-value" id="stat-equity">$10,000</div>
+  </div>
+  <div class="stat-item">
+    <div class="stat-label">نسبة الربح</div>
+    <div class="stat-value" id="stat-winrate">—%</div>
+  </div>
+  <div class="stat-item">
+    <div class="stat-label">صافي الربح</div>
+    <div class="stat-value" id="stat-pnl">$0</div>
+  </div>
+  <div class="stat-item">
+    <div class="stat-label">أحداث شاذة (ساعة)</div>
+    <div class="stat-value" id="stat-anomalies">0</div>
+  </div>
+  <div class="stat-item">
+    <div class="stat-label">حالة السوق</div>
+    <div class="stat-value small" id="stat-regime">—</div>
+  </div>
+</section>
+
+<nav class="tabs">
+  <button class="tab active" data-tab="overview">نظرة عامة</button>
+  <button class="tab" data-tab="signals">الإشارات</button>
+  <button class="tab" data-tab="paper">Paper Trading</button>
+  <button class="tab" data-tab="anomalies">الشواذ</button>
+  <button class="tab" data-tab="events">سجل الأحداث</button>
+  <button class="tab" data-tab="backtest">Backtest</button>
+</nav>
+
 <main class="container">
-
-  <section class="stats-grid">
-    <div class="stat">
-      <div class="stat-label">إشارات نشطة</div>
-      <div class="stat-value" id="stat-active">—</div>
-    </div>
-    <div class="stat">
-      <div class="stat-label">أحداث شاذة (آخر ساعة)</div>
-      <div class="stat-value" id="stat-anomalies">—</div>
-    </div>
-    <div class="stat">
-      <div class="stat-label">آخر فحص</div>
-      <div class="stat-value small" id="stat-last-scan">—</div>
-    </div>
-    <div class="stat">
-      <div class="stat-label">حالة النظام</div>
-      <div class="stat-value" id="stat-status">🟢</div>
-    </div>
-  </section>
-
-  <section class="tabs">
-    <button class="tab active" data-tab="overview">📊 نظرة عامة</button>
-    <button class="tab" data-tab="active">🎯 الإشارات النشطة</button>
-    <button class="tab" data-tab="events">📜 سجل الأحداث</button>
-    <button class="tab" data-tab="anomalies">⚡ الشواذ</button>
-  </section>
 
   <section class="tab-content active" id="tab-overview">
     <div class="cards" id="cards"></div>
     <div class="panel">
-      <h2>🎯 الإشارات الأخيرة</h2>
+      <div class="panel-head">
+        <h2>آخر الإشارات</h2>
+        <span class="count-badge" id="recent-count">0</span>
+      </div>
+      <div id="signals-table-recent"></div>
+    </div>
+  </section>
+
+  <section class="tab-content" id="tab-signals">
+    <div class="panel">
+      <div class="panel-head">
+        <h2>الإشارات النشطة</h2>
+        <span class="count-badge" id="active-count">0</span>
+      </div>
+      <div id="active-signals"></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <h2>سجل الإشارات</h2>
+      </div>
       <div id="signals-table"></div>
     </div>
   </section>
 
-  <section class="tab-content" id="tab-active">
-    <div id="active-signals"></div>
-  </section>
-
-  <section class="tab-content" id="tab-events">
+  <section class="tab-content" id="tab-paper">
+    <div class="paper-stats" id="paper-stats"></div>
     <div class="panel">
-      <h2>📜 آخر 50 حدث</h2>
-      <div id="events-list"></div>
+      <div class="panel-head">
+        <h2>الصفقات المفتوحة</h2>
+        <span class="count-badge" id="open-count">0</span>
+      </div>
+      <div id="paper-open"></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <h2>الصفقات المُغلقة</h2>
+        <span class="count-badge" id="closed-count">0</span>
+      </div>
+      <div id="paper-closed"></div>
     </div>
   </section>
 
   <section class="tab-content" id="tab-anomalies">
     <div class="panel">
-      <h2>⚡ الأحداث الشاذة</h2>
+      <div class="panel-head">
+        <h2>الأحداث الشاذة</h2>
+      </div>
       <div id="anomalies-list"></div>
     </div>
   </section>
 
-</main>
+  <section class="tab-content" id="tab-events">
+    <div class="panel">
+      <div class="panel-head">
+        <h2>سجل الأحداث</h2>
+      </div>
+      <div id="events-list"></div>
+    </div>
+  </section>
 
-<footer>
-  <span>يتم التحديث كل 30 ثانية • <span id="last-update">—</span></span>
-</footer>
+  <section class="tab-content" id="tab-backtest">
+    <div class="panel">
+      <div class="panel-head">
+        <h2>اختبار الاستراتيجية (Backtest)</h2>
+      </div>
+      <div class="backtest-controls">
+        <select id="bt-symbol">
+          <option>BTC/USDT</option>
+          <option>ETH/USDT</option>
+          <option>BNB/USDT</option>
+          <option>SOL/USDT</option>
+        </select>
+        <select id="bt-timeframe">
+          <option value="15m">15 دقيقة</option>
+          <option value="1h" selected>ساعة</option>
+          <option value="4h">4 ساعات</option>
+        </select>
+        <button id="btn-backtest" class="btn primary">▶ تشغيل الاختبار</button>
+      </div>
+      <div id="backtest-results"></div>
+    </div>
+  </section>
+
+</main>
 
 <script src="/static/app.js"></script>
 </body>
