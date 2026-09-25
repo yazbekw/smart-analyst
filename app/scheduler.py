@@ -41,7 +41,7 @@ async def scan_all():
             print(f"  {symbol}: {result['state']} ({result['score']})")
 
             # 1) Delta
-            prev = get_last_snapshot(symbol)
+            prev = get_previous_snapshot(symbol)
             curr_snap = {
                 "trend_score": result["breakdown"]["trend"],
                 "momentum_score": result["breakdown"]["momentum"],
