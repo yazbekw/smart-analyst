@@ -121,3 +121,25 @@ async def api_analyze(symbol: str):
 async def api_scan():
     await scan_all()
     return {"status": "done"}
+
+@app.get("/api/paper/stats")
+async def api_paper_stats():
+    from app.paper import get_paper_stats
+    return get_paper_stats()
+
+
+@app.get("/api/paper/trades")
+async def api_paper_trades(limit: int = 50):
+    res = (
+        get_client().table("paper_trades")
+        .select("*").order("opened_at", desc=True)
+        .limit(limit).execute()
+    )
+    return res.data or []
+
+
+@app.post("/api/backtest/{symbol:path}")
+async def api_backtest(symbol: str, timeframe: str = "1h", lookback: int = 200):
+    from app.backtest import backtest_symbol
+    df = fetch_ohlcv(symbol, timeframe, limit=1000)
+    return backtest_symbol(symbol, df, lookback=lookback)
