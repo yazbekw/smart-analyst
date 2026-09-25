@@ -5,7 +5,7 @@ from app.config import (
 )
 from app.collector import fetch_ohlcv
 from app.engine import analyze_symbol
-from app.notifier import notify_signal, notify_delta, notify_anomaly, notify_lifecycle
+from app.notifier import (     notify_full_analysis, notify_anomaly, notify_lifecycle,     notify_signal,  # alias متوافق مع الكود القديم     notify_delta,   # alias )
 from app.database import save_signal
 from app.delta import get_last_snapshot, compute_delta
 from app.anomaly import detect_anomalies, save_anomaly
