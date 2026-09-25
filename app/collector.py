@@ -27,15 +27,20 @@ def fetch_orderbook(symbol: str, depth: int = 50) -> dict:
 
 def fetch_trades(symbol: str, limit: int = 200) -> list:
     trades = exchange.fetch_trades(symbol, limit=limit)
-    return [
-        {
+    result = []
+    for t in trades:
+        # بعض المنصات تُرجع side ضمن info
+        side = t.get("side")
+        if not side and "info" in t:
+            raw_side = t["info"].get("side") or t["info"].get("type", "")
+            side = "buy" if "buy" in str(raw_side).lower() else "sell"
+        result.append({
             "price": t["price"],
             "amount": t["amount"],
-            "side": t["side"],
+            "side": side or "buy",  # fallback
             "timestamp": t["timestamp"],
-        }
-        for t in trades
-    ]
+        })
+    return result
 
 
 def store_ohlcv(symbol: str, timeframe: str):
