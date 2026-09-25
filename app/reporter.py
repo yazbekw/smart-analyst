@@ -40,6 +40,72 @@ def _fmt_num(n):
         return str(n)
 
 
+def _regime_section(result: dict) -> list:
+    """قسم حالة السوق (Regime)"""
+    lines = []
+    regime_info = result.get("regime") or {}
+    if not regime_info.get("regime"):
+        return lines
+
+    try:
+        from app.regime import REGIME_LABELS
+        rk = regime_info["regime"]
+        icon, name, desc = REGIME_LABELS.get(rk, ("❓", rk, ""))
+        lines.append(f"{icon} <b>حالة السوق:</b> {name}")
+        lines.append(f"   ADX: {regime_info.get('adx', 0)} | ATR%: {regime_info.get('atr_pct', 0)}%")
+        if desc:
+            lines.append(f"   {desc}")
+        lines.append("")
+    except Exception:
+        pass
+
+    return lines
+
+
+def _patterns_section(result: dict) -> list:
+    """قسم الأنماط المكتشفة"""
+    lines = []
+    reasons = result.get("reasons", [])
+    patterns = [r for r in reasons if "[Pattern]" in r]
+    if not patterns:
+        return lines
+
+    lines.append("🎨 <b>الأنماط المكتشفة:</b>")
+    for p in patterns:
+        clean = p.replace("[Pattern] ", "")
+        lines.append(f"  • {clean}")
+    lines.append("")
+    return lines
+
+
+def _correlation_section(result: dict) -> list:
+    """قسم الترابط والسياق"""
+    lines = []
+    corr = result.get("correlation")
+    if not corr or not corr.get("coins"):
+        return lines
+
+    lines.append("🌐 <b>سياق السوق:</b>")
+    btc_ch = corr.get("btc_change", 0)
+    lines.append(f"  • BTC: {btc_ch:+.2f}%")
+
+    coins = corr.get("coins", {})
+    for sym, data in list(coins.items())[:5]:
+        if sym == BTC_REFERENCE:
+            continue
+        change = data.get("change", 0)
+        vs_btc = data.get("vs_btc", 0)
+        arrow = "🔺" if vs_btc > 1.5 else "🔻" if vs_btc < -1.5 else "▫️"
+        lines.append(f"  {arrow} {sym}: {change:+.2f}% (vs BTC: {vs_btc:+.2f}%)")
+
+    leaders = corr.get("leaders", [])
+    if leaders:
+        lines.append(f"  🚀 قادة: {', '.join(leaders[:3])}")
+
+    lines.append("")
+    return lines
+
+
 def build_full_report(result: dict, delta: dict | None = None) -> str:
     """
     يبني تقريراً كاملاً بالعربية من نتيجة التحليل.
@@ -53,7 +119,7 @@ def build_full_report(result: dict, delta: dict | None = None) -> str:
     warnings = result.get("warnings", [])
     levels = result.get("levels") or {}
 
-    # جلب الأطر الزمنية
+    # جلب الأطر الزمنية للعرض
     try:
         df_1d = fetch_ohlcv(symbol, "1d", limit=20)
         df_4h = fetch_ohlcv(symbol, "4h", limit=20)
@@ -85,6 +151,11 @@ def build_full_report(result: dict, delta: dict | None = None) -> str:
     lines.append(f"التغير 24س: <b>{change_24h:+.2f}%</b>")
     lines.append("")
 
+    # ===== قسم Regime (جديد) =====
+    regime_lines = _regime_section(result)
+    if regime_lines:
+        lines.extend(regime_lines)
+
     # الاتجاهات
     lines.append("📈 <b>الاتجاه (متعدد الأطر):</b>")
     lines.append(f"  1D  {_trend_label(df_1d)}")
@@ -106,10 +177,16 @@ def build_full_report(result: dict, delta: dict | None = None) -> str:
     lines.append(f"  <b>المجموع: {score}/100</b>")
     lines.append("")
 
-    # الأسباب
-    if reasons:
+    # ===== قسم الأنماط (جديد) =====
+    patterns_lines = _patterns_section(result)
+    if patterns_lines:
+        lines.extend(patterns_lines)
+
+    # الأسباب (بدون الأنماط التي عُرضت)
+    other_reasons = [r for r in reasons if "[Pattern]" not in r]
+    if other_reasons:
         lines.append("📋 <b>الأسباب:</b>")
-        for r in reasons[:10]:
+        for r in other_reasons[:10]:
             lines.append(f"  • {r}")
         lines.append("")
 
@@ -125,6 +202,12 @@ def build_full_report(result: dict, delta: dict | None = None) -> str:
         lines.append(f"  🎯 TP3:     {_fmt_num(levels.get('tp3'))}")
         lines.append(f"  ⚖️ R:R:     1 : {levels.get('rr', '—')}")
         lines.append("")
+
+    # ===== قسم الترابط (جديد) =====
+    corr_lines = _correlation_section(result)
+    if corr_lines:
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+        lines.extend(corr_lines)
 
     # التطور (إن وجد)
     if delta and delta.get("has_previous"):
