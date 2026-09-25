@@ -19,6 +19,8 @@ from app.lifecycle import (
     get_active_signals, open_signal, update_signal,
     check_tp_sl, close_signal, invalidate_signal,
 )
+from app.paper import open_paper_trade, check_paper_trades
+from app.correlation import build_correlation_context
 
 scheduler = AsyncIOScheduler()
 _last_states: dict[str, tuple] = {}
@@ -27,30 +29,75 @@ _last_states: dict[str, tuple] = {}
 async def scan_all():
     print("🔄 بدء دورة التحليل...")
 
+    # ============================================================
+    # 1. جلب بيانات BTC كمرجع
+    # ============================================================
     try:
         df_btc = fetch_ohlcv(BTC_REFERENCE, "15m", limit=100)
     except Exception as e:
         print(f"⚠️ تعذر جلب BTC: {e}")
         df_btc = None
 
-    # جلب الإشارات النشطة مرة واحدة قبل الحلقة
+    # ============================================================
+    # 2. جلب الإشارات النشطة
+    # ============================================================
     try:
         active = {s["symbol"]: s for s in get_active_signals()}
     except Exception as e:
         print(f"⚠️ تعذر جلب active signals: {e}")
         active = {}
 
+    # ============================================================
+    # 3. فحص الصفقات الورقية (Paper Trading)
+    # ============================================================
+    current_prices = {}
+    try:
+        for sym in SYMBOLS:
+            try:
+                df_tmp = fetch_ohlcv(sym, "15m", limit=2)
+                if df_tmp is not None and len(df_tmp) > 0:
+                    current_prices[sym] = float(df_tmp["close"].iloc[-1])
+            except Exception:
+                pass
+
+        closed_paper = check_paper_trades(current_prices)
+        for ct in closed_paper:
+            pnl = ct.get("pnl", 0) or 0
+            print(f"    💰 paper closed: {ct['symbol']} {ct['hit']} PnL={pnl:.2f}")
+    except Exception as e:
+        print(f"⚠️ paper check: {e}")
+
+    # ============================================================
+    # 4. جلب بيانات جميع العملات لبناء سياق الترابط
+    # ============================================================
+    symbols_data = {}
+    try:
+        for sym in SYMBOLS:
+            try:
+                symbols_data[sym] = fetch_ohlcv(sym, "15m", limit=50)
+            except Exception:
+                symbols_data[sym] = None
+
+        correlation_context = build_correlation_context(symbols_data, df_btc)
+    except Exception as e:
+        print(f"⚠️ correlation: {e}")
+        correlation_context = {}
+
+    # ============================================================
+    # 5. حلقة التحليل الرئيسية
+    # ============================================================
     for symbol in SYMBOLS:
         try:
-            # ==================================================
-            # 1. التحليل الأساسي
-            # ==================================================
+            # ---------- التحليل الأساسي ----------
             result = analyze_symbol(symbol, df_btc=df_btc)
-            print(f"  {symbol}: {result['state']} ({result['score']})")
 
-            # ==================================================
-            # 2. حساب Delta (مقارنة مع اللقطة السابقة)
-            # ==================================================
+            # إضافة سياق الترابط للنتيجة
+            result["correlation"] = correlation_context
+
+            regime_name = (result.get("regime") or {}).get("regime", "?")
+            print(f"  {symbol}: {result['state']} ({result['score']}) [{regime_name}]")
+
+            # ---------- حساب Delta ----------
             prev = get_previous_snapshot(symbol)
             curr_snap = {
                 "trend_score": result["breakdown"]["trend"],
@@ -65,16 +112,14 @@ async def scan_all():
             }
             delta = compute_delta(prev, curr_snap)
 
-            # ==================================================
-            # 3. كشف الشواذ (مع منع التكرار)
-            # ==================================================
+            # ---------- كشف الشواذ ----------
             try:
                 ob = fetch_orderbook(symbol)
                 trades = fetch_trades(symbol, limit=200)
                 df_15m = fetch_ohlcv(symbol, "15m", limit=100)
 
                 for a in detect_anomalies(symbol, df_15m, ob, trades, df_btc):
-                    # تجاهل التكرار خلال آخر 30 دقيقة (نفس العملة + نفس النوع)
+                    # منع التكرار خلال 30 دقيقة
                     if recently_alerted(symbol, a["type"], minutes=30):
                         continue
 
@@ -84,9 +129,7 @@ async def scan_all():
             except Exception as e:
                 print(f"  anomaly {symbol}: {e}")
 
-            # ==================================================
-            # 4. إدارة دورة حياة الإشارة
-            # ==================================================
+            # ---------- إدارة دورة حياة الإشارة ----------
             active_sig = active.get(symbol)
 
             if active_sig:
@@ -127,9 +170,22 @@ async def scan_all():
                             should_open = False
 
                     if should_open:
+                        # فتح إشارة في DB
                         open_signal(result)
+
+                        # فتح صفقة ورقية
+                        try:
+                            paper = open_paper_trade(result)
+                            if paper:
+                                print(f"    💰 paper opened: {symbol} @ {paper['entry_price']:.4f}")
+                        except Exception as e:
+                            print(f"    paper open error: {e}")
+
+                        # إشعار
                         priority = "high" if "STRONG" in result["state"] else "default"
                         await notify_full_analysis(result, delta=delta, priority=priority)
+
+                        # حفظ الإشارة
                         save_signal({
                             "symbol": symbol,
                             "state": result["state"],
