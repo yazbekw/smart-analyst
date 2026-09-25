@@ -3,11 +3,17 @@ from app.config import (
     SYMBOLS, SCAN_INTERVAL_MINUTES, NOTIFY_ONLY_ON_CHANGE,
     MIN_NOTIFY_SCORE, BTC_REFERENCE,
 )
-from app.collector import fetch_ohlcv
+from app.collector import fetch_ohlcv, fetch_orderbook, fetch_trades
 from app.engine import analyze_symbol
-from app.notifier import (     notify_full_analysis, notify_anomaly, notify_lifecycle,     notify_signal,  # alias متوافق مع الكود القديم     notify_delta,   # alias )
+from app.notifier import (
+    notify_full_analysis,
+    notify_anomaly,
+    notify_lifecycle,
+    notify_signal,
+    notify_delta,
+)
 from app.database import save_signal
-from app.delta import get_last_snapshot, compute_delta
+from app.delta import get_previous_snapshot, compute_delta
 from app.anomaly import detect_anomalies, save_anomaly
 from app.lifecycle import (
     get_active_signals, open_signal, update_signal,
