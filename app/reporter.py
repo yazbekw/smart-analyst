@@ -121,10 +121,10 @@ def build_full_report(result: dict, delta: dict | None = None) -> str:
 
     # جلب الأطر الزمنية للعرض
     try:
-        df_1d = fetch_ohlcv(symbol, "1d", limit=20)
-        df_4h = fetch_ohlcv(symbol, "4h", limit=20)
-        df_1h = fetch_ohlcv(symbol, "1h", limit=20)
-        df_15m = fetch_ohlcv(symbol, "15m", limit=20)
+        df_1d = fetch_ohlcv(symbol, "1d", limit=30)
+        df_4h = fetch_ohlcv(symbol, "4h", limit=30)
+        df_1h = fetch_ohlcv(symbol, "1h", limit=30)
+        df_15m = fetch_ohlcv(symbol, "15m", limit=30)
     except Exception:
         df_1d = df_4h = df_1h = df_15m = None
 
@@ -186,7 +186,7 @@ def build_full_report(result: dict, delta: dict | None = None) -> str:
     other_reasons = [r for r in reasons if "[Pattern]" not in r]
     if other_reasons:
         lines.append("📋 <b>الأسباب:</b>")
-        for r in other_reasons[:10]:
+        for r in other_reasons[:15]:
             lines.append(f"  • {r}")
         lines.append("")
 
