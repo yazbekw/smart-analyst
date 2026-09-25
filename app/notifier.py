@@ -5,7 +5,89 @@ from app.config import (
     TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
 )
 
+async def notify_delta(symbol: str, result: dict, delta: dict):
+    """إشعار عند تغير ملحوظ في الإشارة النشطة"""
+    if not delta.get("has_previous"):
+        return
 
+    d = delta["total_delta"]
+    title = f"{delta['emoji']} تطور {symbol} ({d:+d})"
+
+    lines = [
+        f"{delta['emoji']} <b>{symbol}</b> — تطور الإشارة",
+        f"النقاط: <b>{delta['prev_score']} → {result['score']}</b> ({d:+d})",
+        f"السعر: <code>{result['price']}</code>",
+        "",
+        f"📝 {delta['message']}",
+    ]
+
+    if delta.get("notable_changes"):
+        lines.append("")
+        lines.append("🔍 <b>تغيرات ملحوظة:</b>")
+        for c in delta["notable_changes"]:
+            lines.append(f"• {c}")
+
+    if delta.get("flips"):
+        lines.append("")
+        lines.append(f"⚡ <b>انقلاب:</b> {', '.join(delta['flips'])}")
+
+    text = "\n".join(lines)
+    plain = text.replace("<b>", "").replace("</b>", "").replace("<code>", "").replace("</code>", "")
+    await asyncio.gather(
+        notify_ntfy(title, plain, priority="default"),
+        notify_telegram(text),
+        return_exceptions=True,
+    )
+
+
+async def notify_anomaly(symbol: str, anomaly: dict, price: float):
+    """إشعار فوري عند حدث شاذ"""
+    title = f"⚡ {symbol} — {anomaly['type']}"
+    text = (
+        f"⚡ <b>حدث مفاجئ — {symbol}</b>\n"
+        f"{anomaly['message']}\n"
+        f"السعر: <code>{price}</code>\n"
+        f"الخطورة: {anomaly['severity']}"
+    )
+    plain = text.replace("<b>", "").replace("</b>", "").replace("<code>", "").replace("</code>", "")
+    priority = "urgent" if anomaly["severity"] == "high" else "high"
+    await asyncio.gather(
+        notify_ntfy(title, plain, priority=priority, tags=["warning"]),
+        notify_telegram(text),
+        return_exceptions=True,
+    )
+
+
+async def notify_lifecycle(symbol: str, event: str, result: dict, signal: dict):
+    """إشعار عند حدث في دورة حياة الإشارة"""
+    labels = {
+        "tp1_hit": "🎯 TP1 تحقق",
+        "tp2_hit": "🎯🎯 TP2 تحقق",
+        "tp3_hit": "🏆 TP3 تحقق",
+        "sl_hit": "🛑 وقف الخسارة ضُرب",
+        "invalidated": "❌ الإشارة أُلغيت",
+    }
+    title = f"{labels.get(event, event)} — {symbol}"
+
+    lines = [
+        f"<b>{labels.get(event, event)}</b>",
+        f"الرمز: {symbol}",
+        f"السعر الحالي: <code>{result['price']}</code>",
+        f"الحالة: {result['state']} ({result['score']})",
+    ]
+
+    if event == "sl_hit":
+        lines.append("")
+        lines.append("🛑 يُنصح بمراجعة الصفقة والخروج.")
+
+    text = "\n".join(lines)
+    plain = text.replace("<b>", "").replace("</b>", "").replace("<code>", "").replace("</code>", "")
+    priority = "urgent" if event in ("sl_hit", "invalidated") else "high"
+    await asyncio.gather(
+        notify_ntfy(title, plain, priority=priority, tags=["bell"]),
+        notify_telegram(text),
+        return_exceptions=True,
+    )
 async def notify_ntfy(title: str, message: str, priority: str = "default", tags: list | None = None):
     if not NTFY_TOPIC:
         return
