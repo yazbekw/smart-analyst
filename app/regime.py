@@ -1,4 +1,4 @@
-import pandas_ta as ta
+import pandas_ta_classic as ta
 
 
 def detect_regime(df_1h: "pd.DataFrame") -> dict:
