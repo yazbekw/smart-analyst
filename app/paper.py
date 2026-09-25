@@ -3,7 +3,7 @@ from app.database import get_client
 
 
 def open_paper_trade(signal_result, capital=10000, risk_pct=1.0):
-    """يفتح صفقة ورقية مع حساب R-Multiple صحيح"""
+    """يفتح صفقة ورقية مع R-Multiple"""
     lv = signal_result.get("levels") or {}
     if not lv or not lv.get("entry_low"):
         return None
@@ -16,7 +16,7 @@ def open_paper_trade(signal_result, capital=10000, risk_pct=1.0):
         return None
 
     risk_amount = capital * (risk_pct / 100.0)  # $100
-    size = risk_amount / risk_per_unit          # حجم الصفقة
+    size = risk_amount / risk_per_unit
 
     try:
         res = get_client().table("paper_trades").insert({
@@ -28,7 +28,7 @@ def open_paper_trade(signal_result, capital=10000, risk_pct=1.0):
             "tp2": lv["tp2"],
             "tp3": lv["tp3"],
             "size": round(size, 8),
-            "risk_amount": round(risk_amount, 2),  # ← جديد
+            "risk_amount": round(risk_amount, 2),
             "status": "open",
             "signal_score": signal_result["score"],
             "opened_at": datetime.now(timezone.utc).isoformat(),
@@ -40,7 +40,13 @@ def open_paper_trade(signal_result, capital=10000, risk_pct=1.0):
 
 
 def check_paper_trades(current_prices: dict):
-    """يفحص الصفقات المفتوحة ويحدّثها مع R-Multiple صحيح"""
+    """
+    فحص الصفقات مع R-Multiple صحيح:
+    - TP1 = +2.0R
+    - TP2 = +3.5R
+    - TP3 = +5.5R
+    - SL  = -1.0R
+    """
     try:
         res = get_client().table("paper_trades").select("*").eq("status", "open").execute()
         trades = res.data or []
@@ -78,19 +84,14 @@ def check_paper_trades(current_prices: dict):
                 hit, exit_price, r_multiple = "tp1_hit", t["tp1"], 2.0
 
         if hit:
-            # PnL بناءً على R-Multiple
             risk_amount = t.get("risk_amount") or 100
             pnl = risk_amount * r_multiple
-
-            # PnL نسبي (للمقارنة)
-            pnl_pct = r_multiple * 1.0  # 1R = 1% من رأس المال
 
             try:
                 get_client().table("paper_trades").update({
                     "status": hit,
                     "exit_price": exit_price,
                     "pnl": round(pnl, 2),
-                    "pnl_pct": round(pnl_pct, 2),
                     "r_multiple": r_multiple,
                     "closed_at": datetime.now(timezone.utc).isoformat(),
                 }).eq("id", t["id"]).execute()
@@ -102,7 +103,7 @@ def check_paper_trades(current_prices: dict):
 
 
 def get_paper_stats(initial_capital=10000):
-    """إحصائيات الأداء"""
+    """إحصائيات Paper Trading"""
     try:
         closed = get_client().table("paper_trades").select("*").neq("status", "open").execute().data or []
         open_t = get_client().table("paper_trades").select("*").eq("status", "open").execute().data or []
