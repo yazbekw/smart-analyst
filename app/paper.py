@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from app.database import get_client
 
 
-def open_paper_trade(signal_result, capital=10000, risk_pct=1.0):
+def open_paper_trade(signal_result, capital=10000, risk_pct=1.0, variant="baseline"):
     """يفتح صفقة ورقية مع R-Multiple"""
     lv = signal_result.get("levels") or {}
     if not lv or not lv.get("entry_low"):
@@ -15,7 +15,7 @@ def open_paper_trade(signal_result, capital=10000, risk_pct=1.0):
     if risk_per_unit == 0:
         return None
 
-    risk_amount = capital * (risk_pct / 100.0)  # $100
+    risk_amount = capital * (risk_pct / 100.0)
     size = risk_amount / risk_per_unit
 
     try:
@@ -32,6 +32,11 @@ def open_paper_trade(signal_result, capital=10000, risk_pct=1.0):
             "status": "open",
             "signal_score": signal_result["score"],
             "opened_at": datetime.now(timezone.utc).isoformat(),
+            "variant": variant,  # ← جديد
+            "config_snapshot": {
+                "min_score": signal_result.get("score"),
+                "regime": (signal_result.get("regime") or {}).get("regime"),
+            },
         }).execute()
         return res.data[0] if res.data else None
     except Exception as e:
