@@ -8,7 +8,6 @@ from app.reporter import build_full_report
 
 async def notify_ntfy(title, message, priority="default", tags=None):
     if not NTFY_TOPIC:
-        print("[ntfy] ⚠️ NTFY_TOPIC غير مضبوط")
         return
 
     safe_title = title.encode("ascii", "ignore").decode("ascii") or "Smart Analyst"
@@ -22,20 +21,27 @@ async def notify_ntfy(title, message, priority="default", tags=None):
         headers["Tags"] = ",".join(safe_tags)
 
     url = f"{NTFY_SERVER}/{NTFY_TOPIC}"
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            response = await client.post(
-                url,
-                content=message.encode("utf-8"),
-                headers=headers,
-            )
-            # ← جديد: فحص حالة الرد
-            if response.status_code >= 400:
-                print(f"[ntfy] ❌ HTTP {response.status_code}: {response.text[:200]}")
-            else:
-                print(f"[ntfy] ✅ أُرسل ({len(message)} حرف) — Status {response.status_code}")
-    except Exception as e:
-        print(f"[ntfy] ❌ استثناء: {type(e).__name__}: {e}")
+
+    # 3 محاولات
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    url,
+                    content=message.encode("utf-8"),
+                    headers=headers,
+                )
+                if response.status_code < 400:
+                    print(f"[ntfy] ✅ أُرسل (attempt {attempt + 1})")
+                    return
+                else:
+                    print(f"[ntfy] ⚠️ HTTP {response.status_code}: {response.text[:100]}")
+        except Exception as e:
+            print(f"[ntfy] ❌ محاولة {attempt + 1}: {type(e).__name__}: {e}")
+            if attempt < 2:
+                await asyncio.sleep(2)  # انتظر ثانيتين قبل إعادة المحاولة
+
+    print(f"[ntfy] ❌ فشلت جميع المحاولات")
         
 
 
@@ -47,7 +53,7 @@ async def notify_telegram(message):
     # Telegram يدعم 4096 حرف لكل رسالة — نقسم إن لزم
     chunks = [message[i:i+3800] for i in range(0, len(message), 3800)]
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             for chunk in chunks:
                 await client.post(url, json={
                     "chat_id": TELEGRAM_CHAT_ID,
