@@ -21,6 +21,7 @@ from app.lifecycle import (
 )
 from app.paper import open_paper_trade, check_paper_trades
 from app.correlation import build_correlation_context
+from app.experiments import get_active_variants, passes_variant
 
 scheduler = AsyncIOScheduler()
 _last_states: dict[str, tuple] = {}
@@ -30,7 +31,13 @@ async def scan_all():
     print("🔄 بدء دورة التحليل...")
 
     # ============================================================
-    # 1. جلب بيانات BTC كمرجع
+    # 1. جلب Variants النشطة
+    # ============================================================
+    variants = get_active_variants()
+    print(f"📊 Variants نشطة: {len(variants)}")
+
+    # ============================================================
+    # 2. جلب بيانات BTC كمرجع
     # ============================================================
     try:
         df_btc = fetch_ohlcv(BTC_REFERENCE, "15m", limit=100)
@@ -39,7 +46,7 @@ async def scan_all():
         df_btc = None
 
     # ============================================================
-    # 2. جلب الإشارات النشطة
+    # 3. جلب الإشارات النشطة
     # ============================================================
     try:
         active = {s["symbol"]: s for s in get_active_signals()}
@@ -48,7 +55,7 @@ async def scan_all():
         active = {}
 
     # ============================================================
-    # 3. فحص الصفقات الورقية (Paper Trading)
+    # 4. فحص الصفقات الورقية (Paper Trading)
     # ============================================================
     current_prices = {}
     try:
@@ -68,7 +75,7 @@ async def scan_all():
         print(f"⚠️ paper check: {e}")
 
     # ============================================================
-    # 4. جلب بيانات جميع العملات لبناء سياق الترابط
+    # 5. جلب بيانات جميع العملات لبناء سياق الترابط
     # ============================================================
     symbols_data = {}
     try:
@@ -84,14 +91,14 @@ async def scan_all():
         correlation_context = {}
 
     # ============================================================
-    # 5. حلقة التحليل الرئيسية
+    # 6. حلقة التحليل الرئيسية
     # ============================================================
     for symbol in SYMBOLS:
         try:
             # ---------- التحليل الأساسي ----------
             result = analyze_symbol(symbol, df_btc=df_btc)
 
-            # إضافة سياق الترابط للنتيجة
+            # إضافة سياق الترابط
             result["correlation"] = correlation_context
 
             regime_name = (result.get("regime") or {}).get("regime", "?")
@@ -119,7 +126,6 @@ async def scan_all():
                 df_15m = fetch_ohlcv(symbol, "15m", limit=100)
 
                 for a in detect_anomalies(symbol, df_15m, ob, trades, df_btc):
-                    # منع التكرار خلال 30 دقيقة
                     if recently_alerted(symbol, a["type"], minutes=30):
                         continue
 
@@ -129,7 +135,33 @@ async def scan_all():
             except Exception as e:
                 print(f"  anomaly {symbol}: {e}")
 
-            # ---------- إدارة دورة حياة الإشارة ----------
+            # ---------- نظام التجارب (A/B Testing) ----------
+            # فتح صفقات على variants مختلفة
+            if "BUY" in result["state"] or "SELL" in result["state"]:
+                try:
+                    df_15m_for_filter = fetch_ohlcv(symbol, "15m", limit=100)
+                except Exception:
+                    df_15m_for_filter = None
+
+                for variant in variants:
+                    variant_name = variant.get("name", "baseline")
+                    # config قد يكون في حقل config أو في الحقول المباشرة
+                    config = variant.get("config") or variant
+
+                    allowed, reason = passes_variant(result, config, df_15m_for_filter)
+
+                    if allowed:
+                        try:
+                            paper = open_paper_trade(result, variant=variant_name)
+                            if paper:
+                                entry = paper.get("entry_price", 0)
+                                print(f"    💰 [{variant_name}] paper opened @ {entry:.4f}")
+                        except Exception as e:
+                            print(f"    ❌ [{variant_name}] paper error: {e}")
+                    else:
+                        print(f"    ⏭️ [{variant_name}] تجاهل: {reason}")
+
+            # ---------- إدارة دورة حياة الإشارة (baseline فقط) ----------
             active_sig = active.get(symbol)
 
             if active_sig:
@@ -170,22 +202,11 @@ async def scan_all():
                             should_open = False
 
                     if should_open:
-                        # فتح إشارة في DB
                         open_signal(result)
 
-                        # فتح صفقة ورقية
-                        try:
-                            paper = open_paper_trade(result)
-                            if paper:
-                                print(f"    💰 paper opened: {symbol} @ {paper['entry_price']:.4f}")
-                        except Exception as e:
-                            print(f"    paper open error: {e}")
-
-                        # إشعار
                         priority = "high" if "STRONG" in result["state"] else "default"
                         await notify_full_analysis(result, delta=delta, priority=priority)
 
-                        # حفظ الإشارة
                         save_signal({
                             "symbol": symbol,
                             "state": result["state"],
