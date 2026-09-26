@@ -3,9 +3,13 @@ from app.collector import fetch_ohlcv
 from app.config import BTC_REFERENCE
 
 
+# ============================================================
+# Helpers
+# ============================================================
 def _trend_emoji(state: str) -> str:
     if "STRONG BUY" in state: return "🟢🔥"
     if "BUY" in state: return "🟢"
+    if state == "WAIT FOR CONFIRMATION": return "🔵"
     if "WATCH" in state: return "🟡"
     if "STRONG SELL" in state: return "🔴🔥"
     if "SELL" in state: return "🔴"
@@ -40,6 +44,9 @@ def _fmt_num(n):
         return str(n)
 
 
+# ============================================================
+# Sections
+# ============================================================
 def _regime_section(result: dict) -> list:
     """قسم حالة السوق (Regime)"""
     lines = []
@@ -70,10 +77,27 @@ def _patterns_section(result: dict) -> list:
     if not patterns:
         return lines
 
-    lines.append("🎨 <b>الأنماط المكتشفة:</b>")
+    lines.append("🎨 <b>الأنماط السعرية المكتشفة:</b>")
     for p in patterns:
         clean = p.replace("[Pattern] ", "")
         lines.append(f"  • {clean}")
+    lines.append("")
+    return lines
+
+
+def _candlestick_section(result: dict) -> list:
+    """قسم أنماط الشموع اليابانية"""
+    lines = []
+    reasons = result.get("reasons", [])
+    keywords = ["Hammer", "Shooting Star", "Bullish Engulfing", "Bearish Engulfing",
+                "Pin Bar", "المطرقة", "الشهاب", "الابتلاع"]
+    candles = [r for r in reasons if any(k in r for k in keywords)]
+    if not candles:
+        return lines
+
+    lines.append("🕯️ <b>أنماط الشموع:</b>")
+    for c in candles:
+        lines.append(f"  • {c}")
     lines.append("")
     return lines
 
@@ -90,7 +114,7 @@ def _correlation_section(result: dict) -> list:
     lines.append(f"  • BTC: {btc_ch:+.2f}%")
 
     coins = corr.get("coins", {})
-    for sym, data in list(coins.items())[:5]:
+    for sym, data in list(coins.items())[:8]:
         if sym == BTC_REFERENCE:
             continue
         change = data.get("change", 0)
@@ -102,10 +126,119 @@ def _correlation_section(result: dict) -> list:
     if leaders:
         lines.append(f"  🚀 قادة: {', '.join(leaders[:3])}")
 
+    laggards = corr.get("laggards", [])
+    if laggards:
+        lines.append(f"  🐌 متأخرون: {', '.join(laggards[:3])}")
+
+    # Sector strength
+    try:
+        from app.correlation import get_sector_strength
+        sector, vs_btc, label = get_sector_strength(corr, result["symbol"])
+        if sector != "Other":
+            lines.append(f"  📦 القطاع: {sector} ({label}, {vs_btc:+.2f}% vs BTC)")
+    except Exception:
+        pass
+
     lines.append("")
     return lines
 
 
+def _analyst_opinion(result: dict) -> list:
+    """رأي المحلل بالعربي"""
+    lines = []
+    state = result.get("state", "NO TRADE")
+    score = result.get("score", 0)
+    symbol = result.get("symbol", "")
+    regime = (result.get("regime") or {}).get("regime", "unknown")
+    warnings = result.get("warnings", [])
+    breakdown = result.get("breakdown", {})
+
+    lines.append("💬 <b>رأي المحلل:</b>")
+    lines.append("")
+
+    # الحالة
+    if "STRONG BUY" in state:
+        lines.append(f"الوضع على {symbol} إيجابي بقوة. الأدلة مجتمعة تشير إلى فرصة شراء عالية الجودة.")
+    elif state == "BUY SETUP":
+        lines.append(f"الوضع على {symbol} إيجابي. توجد أدلة كافية لاعتبار هذه فرصة شراء محتملة.")
+    elif state == "WAIT FOR CONFIRMATION":
+        lines.append(f"الوضع على {symbol} مائل للإيجابية، لكن يحتاج تأكيداً. الإشارة قريبة لكن غير مكتملة.")
+    elif "STRONG SELL" in state:
+        lines.append(f"الوضع على {symbol} سلبي بقوة. الأدلة تشير إلى ضغط بيعي حاد.")
+    elif state == "SELL SETUP":
+        lines.append(f"الوضع على {symbol} سلبي. توجد أدلة كافية لاعتبار هذه فرصة بيع محتملة.")
+    elif state == "WATCH":
+        lines.append(f"الوضع على {symbol} غير حاسم. توجد أدلة إيجابية جزئية، لكنها غير كافية للدخول.")
+    else:
+        lines.append(f"الوضع على {symbol} محايد. لا توجد أدلة كافية لاتخاذ قرار.")
+
+    lines.append("")
+
+    # Regime
+    if regime == "trending":
+        lines.append("📈 السوق في اتجاه واضح، وهذا يرفع موثوقية إشارات الزخم. الاتجاه صديقك.")
+    elif regime == "ranging":
+        lines.append("↔️ السوق جانبي، وهذا يقلل موثوقية الزخم. الأفضل التركيز على الدعم/المقاومة.")
+    elif regime == "high_vol":
+        lines.append("🔥 التقلب مرتفع. فرص أكبر لكن مخاطر أعلى. قلل حجم الصفقة.")
+    elif regime == "low_vol":
+        lines.append("😴 التقلب منخفض. السوق قد يجهّز نفسه لاختراق قريب.")
+
+    lines.append("")
+
+    # أقوى/أضعف عامل
+    labels = {
+        "trend": "الاتجاه", "momentum": "الزخم", "volume": "الحجم",
+        "orderflow": "تدفق الأوامر", "structure": "البنية",
+        "context": "السياق", "risk": "المخاطرة",
+    }
+    if breakdown:
+        try:
+            strongest = max(breakdown.items(), key=lambda x: x[1])
+            weakest = min(breakdown.items(), key=lambda x: x[1])
+            if strongest[1] > 3:
+                lines.append(f"💪 <b>أقوى عامل:</b> {labels.get(strongest[0], strongest[0])} (+{strongest[1]})")
+            if weakest[1] < -2:
+                lines.append(f"⚠️ <b>أضعف عامل:</b> {labels.get(weakest[0], weakest[0])} ({weakest[1]})")
+            lines.append("")
+        except Exception:
+            pass
+
+    # النصيحة
+    if "STRONG BUY" in state:
+        lines.append("🎯 <b>النصيحة:</b> هذه فرصة جيدة. ادخل داخل منطقة الدخول، مع وقف دقيق. لا تحرك الوقف.")
+    elif state == "BUY SETUP":
+        lines.append("🎯 <b>النصيحة:</b> الفرصة موجودة. ادخل جزئياً (50%) حتى تتأكد الإشارة.")
+    elif state == "WAIT FOR CONFIRMATION":
+        lines.append("🎯 <b>النصيحة:</b> اقتربت الإشارة. انتظر شمعة إغلاق فوق منطقة الدخول قبل التنفيذ.")
+    elif state == "WATCH":
+        lines.append("🎯 <b>النصيحة:</b> لا تدخل الآن. راقب وانتظر اختراقاً بحجم واضح.")
+    elif "STRONG SELL" in state:
+        lines.append("🎯 <b>النصيحة:</b> ضغط بيعي حاد. إذا كنت داخل شراء، اخرج. لا تشتر الآن.")
+    elif state == "SELL SETUP":
+        lines.append("🎯 <b>النصيحة:</b> الوضع سلبي. البيع يحتاج تأكيداً إضافياً. احذر الارتدادات.")
+    else:
+        lines.append("🎯 <b>النصيحة:</b> لا تداول. الأفضل الانتظار. ليس كل لحظة تستحق صفقة.")
+
+    lines.append("")
+
+    # تحذير
+    if warnings:
+        critical = [w for w in warnings if "R:R" in w or "وقف" in w or "مقاومة" in w or "Order Flow" in w]
+        if critical:
+            lines.append("🚨 <b>تحذير:</b>")
+            for w in critical[:3]:
+                lines.append(f"• {w}")
+            lines.append("")
+
+    lines.append("⚖️ الصفقة الجيدة هي التي تنجح حتى لو فشلت، لأن المخاطرة محسوبة.")
+
+    return lines
+
+
+# ============================================================
+# Main Report Builder
+# ============================================================
 def build_full_report(result: dict, delta: dict | None = None) -> str:
     """
     يبني تقريراً كاملاً بالعربية من نتيجة التحليل.
@@ -119,7 +252,7 @@ def build_full_report(result: dict, delta: dict | None = None) -> str:
     warnings = result.get("warnings", [])
     levels = result.get("levels") or {}
 
-    # جلب الأطر الزمنية للعرض
+    # جلب الأطر الزمنية (30 شمعة لتفادي حساب 24س بشكل خاطئ)
     try:
         df_1d = fetch_ohlcv(symbol, "1d", limit=30)
         df_4h = fetch_ohlcv(symbol, "4h", limit=30)
@@ -130,7 +263,10 @@ def build_full_report(result: dict, delta: dict | None = None) -> str:
 
     # التغير على 24 ساعة
     try:
-        change_24h = (df_1h["close"].iloc[-1] / df_1h["close"].iloc[-24] - 1) * 100 if df_1h is not None else 0
+        if df_1h is not None and len(df_1h) >= 24:
+            change_24h = (df_1h["close"].iloc[-1] / df_1h["close"].iloc[-24] - 1) * 100
+        else:
+            change_24h = 0
     except Exception:
         change_24h = 0
 
@@ -151,7 +287,7 @@ def build_full_report(result: dict, delta: dict | None = None) -> str:
     lines.append(f"التغير 24س: <b>{change_24h:+.2f}%</b>")
     lines.append("")
 
-    # ===== قسم Regime (جديد) =====
+    # ===== قسم Regime =====
     regime_lines = _regime_section(result)
     if regime_lines:
         lines.extend(regime_lines)
@@ -177,17 +313,37 @@ def build_full_report(result: dict, delta: dict | None = None) -> str:
     lines.append(f"  <b>المجموع: {score}/100</b>")
     lines.append("")
 
-    # ===== قسم الأنماط (جديد) =====
+    # ===== قسم الأنماط السعرية =====
     patterns_lines = _patterns_section(result)
     if patterns_lines:
         lines.extend(patterns_lines)
 
+    # ===== قسم أنماط الشموع =====
+    candles_lines = _candlestick_section(result)
+    if candles_lines:
+        lines.extend(candles_lines)
+
     # الأسباب (بدون الأنماط التي عُرضت)
-    other_reasons = [r for r in reasons if "[Pattern]" not in r]
+    other_reasons = [
+        r for r in reasons
+        if "[Pattern]" not in r
+        and "Hammer" not in r
+        and "Engulfing" not in r
+        and "Pin Bar" not in r
+        and "الشهاب" not in r
+        and "المطرقة" not in r
+    ]
     if other_reasons:
         lines.append("📋 <b>الأسباب:</b>")
         for r in other_reasons[:15]:
             lines.append(f"  • {r}")
+        lines.append("")
+
+    # ===== رأي المحلل =====
+    opinion_lines = _analyst_opinion(result)
+    if opinion_lines:
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+        lines.extend(opinion_lines)
         lines.append("")
 
     # خطة التداول
@@ -203,7 +359,7 @@ def build_full_report(result: dict, delta: dict | None = None) -> str:
         lines.append(f"  ⚖️ R:R:     1 : {levels.get('rr', '—')}")
         lines.append("")
 
-    # ===== قسم الترابط (جديد) =====
+    # ===== قسم الترابط =====
     corr_lines = _correlation_section(result)
     if corr_lines:
         lines.append("━━━━━━━━━━━━━━━━━━━━━━")
@@ -233,12 +389,18 @@ def build_full_report(result: dict, delta: dict | None = None) -> str:
 
     # الإجراء
     lines.append("━━━━━━━━━━━━━━━━━━━━━━")
-    if "BUY" in state:
-        lines.append("📌 <b>الإجراء:</b> انتظر تأكيد الإغلاق فوق منطقة الدخول قبل التنفيذ")
-    elif "SELL" in state:
-        lines.append("📌 <b>الإجراء:</b> انتظر تأكيد الإغلاق تحت منطقة الدخول")
+    if "STRONG BUY" in state:
+        lines.append("📌 <b>الإجراء:</b> فرصة قوية — ادخل بحجم كامل مع وقف دقيق")
+    elif state == "BUY SETUP":
+        lines.append("📌 <b>الإجراء:</b> ادخل جزئياً، وزد الحجم عند التأكيد")
+    elif state == "WAIT FOR CONFIRMATION":
+        lines.append("📌 <b>الإجراء:</b> انتظر شمعة تأكيد فوق منطقة الدخول")
     elif state == "WATCH":
         lines.append("📌 <b>الإجراء:</b> مراقبة — لا تدخل حتى تتضح الإشارة")
+    elif "STRONG SELL" in state:
+        lines.append("📌 <b>الإجراء:</b> ضغط بيعي — اخرج من أي شراء، لا تشتر")
+    elif state == "SELL SETUP":
+        lines.append("📌 <b>الإجراء:</b> بيع محتمل — يحتاج تأكيداً إضافياً")
     else:
         lines.append("📌 <b>الإجراء:</b> لا تداول — انتظر إشارة أوضح")
     lines.append("━━━━━━━━━━━━━━━━━━━━━━")
