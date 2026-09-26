@@ -28,7 +28,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 # ===== Scheduler =====
 SCAN_INTERVAL_MINUTES = int(os.getenv("SCAN_INTERVAL_MINUTES", "15"))
 NOTIFY_ONLY_ON_CHANGE = os.getenv("NOTIFY_ONLY_ON_CHANGE", "true").lower() == "true"
-MIN_NOTIFY_SCORE = int(os.getenv("MIN_NOTIFY_SCORE", "8"))
+MIN_NOTIFY_SCORE = int(os.getenv("MIN_NOTIFY_SCORE", "12"))
 
 # ===== App =====
 PORT = int(os.getenv("PORT", "8000"))
