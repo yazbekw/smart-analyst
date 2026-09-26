@@ -35,6 +35,8 @@ async def scan_all():
     # ============================================================
     variants = get_active_variants()
     print(f"📊 Variants نشطة: {len(variants)}")
+    for v in variants:
+        print(f"     • {v.get('name')} — {v.get('description', '')}")
 
     # ============================================================
     # 2. جلب بيانات BTC كمرجع
@@ -70,12 +72,13 @@ async def scan_all():
         closed_paper = check_paper_trades(current_prices)
         for ct in closed_paper:
             pnl = ct.get("pnl", 0) or 0
-            print(f"    💰 paper closed: {ct['symbol']} {ct['hit']} PnL={pnl:.2f}")
+            variant_tag = ct.get("variant", "?")
+            print(f"    💰 [{variant_tag}] paper closed: {ct['symbol']} {ct['hit']} PnL={pnl:.2f}")
     except Exception as e:
         print(f"⚠️ paper check: {e}")
 
     # ============================================================
-    # 5. جلب بيانات جميع العملات لبناء سياق الترابط
+    # 5. بناء سياق الترابط
     # ============================================================
     symbols_data = {}
     try:
@@ -123,9 +126,9 @@ async def scan_all():
             try:
                 ob = fetch_orderbook(symbol)
                 trades = fetch_trades(symbol, limit=200)
-                df_15m = fetch_ohlcv(symbol, "15m", limit=100)
+                df_15m_anom = fetch_ohlcv(symbol, "15m", limit=100)
 
-                for a in detect_anomalies(symbol, df_15m, ob, trades, df_btc):
+                for a in detect_anomalies(symbol, df_15m_anom, ob, trades, df_btc):
                     if recently_alerted(symbol, a["type"], minutes=30):
                         continue
 
@@ -135,20 +138,28 @@ async def scan_all():
             except Exception as e:
                 print(f"  anomaly {symbol}: {e}")
 
-            # ---------- نظام التجارب (A/B Testing) ----------
-            # فتح صفقات على variants مختلفة
-            if "BUY" in result["state"] or "SELL" in result["state"]:
+            # ============================================================
+            # 7. نظام التجارب (A/B Testing) — يشمل WAIT FOR CONFIRMATION
+            # ============================================================
+            if result["state"] not in ("NO TRADE", "WATCH"):
                 try:
-                    df_15m_for_filter = fetch_ohlcv(symbol, "15m", limit=100)
+                    df_15m_filter = fetch_ohlcv(symbol, "15m", limit=100)
                 except Exception:
-                    df_15m_for_filter = None
+                    df_15m_filter = None
+
+                variants_opened = 0
+                variants_skipped = 0
 
                 for variant in variants:
                     variant_name = variant.get("name", "baseline")
-                    # config قد يكون في حقل config أو في الحقول المباشرة
+                    # config قد يكون dict أو JSON من DB
                     config = variant.get("config") or variant
 
-                    allowed, reason = passes_variant(result, config, df_15m_for_filter)
+                    try:
+                        allowed, reason = passes_variant(result, config, df_15m_filter)
+                    except Exception as e:
+                        print(f"    ❌ [{variant_name}] passes_variant error: {e}")
+                        continue
 
                     if allowed:
                         try:
@@ -156,12 +167,21 @@ async def scan_all():
                             if paper:
                                 entry = paper.get("entry_price", 0)
                                 print(f"    💰 [{variant_name}] paper opened @ {entry:.4f}")
+                                variants_opened += 1
+                            else:
+                                print(f"    ⚠️ [{variant_name}] open_paper_trade عاد None")
                         except Exception as e:
                             print(f"    ❌ [{variant_name}] paper error: {e}")
                     else:
                         print(f"    ⏭️ [{variant_name}] تجاهل: {reason}")
+                        variants_skipped += 1
 
-            # ---------- إدارة دورة حياة الإشارة (baseline فقط) ----------
+                if variants_opened > 0:
+                    print(f"    📊 فُتحت {variants_opened} صفقة (تجاهل {variants_skipped})")
+
+            # ============================================================
+            # 8. إدارة دورة حياة الإشارة (baseline فقط)
+            # ============================================================
             active_sig = active.get(symbol)
 
             if active_sig:
