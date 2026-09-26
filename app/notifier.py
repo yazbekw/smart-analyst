@@ -8,7 +8,9 @@ from app.reporter import build_full_report
 
 async def notify_ntfy(title, message, priority="default", tags=None):
     if not NTFY_TOPIC:
+        print("[ntfy] ⚠️ NTFY_TOPIC غير مضبوط")
         return
+
     safe_title = title.encode("ascii", "ignore").decode("ascii") or "Smart Analyst"
     safe_tags = []
     if tags:
@@ -19,15 +21,22 @@ async def notify_ntfy(title, message, priority="default", tags=None):
     if safe_tags:
         headers["Tags"] = ",".join(safe_tags)
 
+    url = f"{NTFY_SERVER}/{NTFY_TOPIC}"
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            await client.post(
-                f"{NTFY_SERVER}/{NTFY_TOPIC}",
+            response = await client.post(
+                url,
                 content=message.encode("utf-8"),
                 headers=headers,
             )
+            # ← جديد: فحص حالة الرد
+            if response.status_code >= 400:
+                print(f"[ntfy] ❌ HTTP {response.status_code}: {response.text[:200]}")
+            else:
+                print(f"[ntfy] ✅ أُرسل ({len(message)} حرف) — Status {response.status_code}")
     except Exception as e:
-        print(f"[ntfy] {e}")
+        print(f"[ntfy] ❌ استثناء: {type(e).__name__}: {e}")
+        
 
 
 async def notify_telegram(message):
