@@ -12,7 +12,7 @@ from app.notifier import (
     notify_signal,
     notify_delta,
 )
-from app.database import save_signal
+from app.database import save_signal, get_client
 from app.delta import get_previous_snapshot, compute_delta
 from app.anomaly import detect_anomalies, save_anomaly, recently_alerted
 from app.lifecycle import (
@@ -35,8 +35,6 @@ async def scan_all():
     # ============================================================
     variants = get_active_variants()
     print(f"📊 Variants نشطة: {len(variants)}")
-    for v in variants:
-        print(f"     • {v.get('name')} — {v.get('description', '')}")
 
     # ============================================================
     # 2. جلب بيانات BTC كمرجع
@@ -57,7 +55,24 @@ async def scan_all():
         active = {}
 
     # ============================================================
-    # 4. فحص الصفقات الورقية (Paper Trading)
+    # 4. جلب الصفقات الورقية المفتوحة (لمنع التكرار)
+    # ============================================================
+    try:
+        open_papers = (
+            get_client().table("paper_trades")
+            .select("variant, symbol")
+            .eq("status", "open")
+            .execute()
+        ).data or []
+        # مفتاح فريد (variant, symbol)
+        open_keys = {(p["variant"], p["symbol"]) for p in open_papers}
+        print(f"📋 صفقات مفتوحة: {len(open_papers)} (مفاتيح فريدة: {len(open_keys)})")
+    except Exception as e:
+        print(f"⚠️ تعذر جلب open_papers: {e}")
+        open_keys = set()
+
+    # ============================================================
+    # 5. فحص الصفقات الورقية (إغلاق TP/SL)
     # ============================================================
     current_prices = {}
     try:
@@ -78,7 +93,7 @@ async def scan_all():
         print(f"⚠️ paper check: {e}")
 
     # ============================================================
-    # 5. بناء سياق الترابط
+    # 6. بناء سياق الترابط
     # ============================================================
     symbols_data = {}
     try:
@@ -94,7 +109,7 @@ async def scan_all():
         correlation_context = {}
 
     # ============================================================
-    # 6. حلقة التحليل الرئيسية
+    # 7. حلقة التحليل الرئيسية
     # ============================================================
     for symbol in SYMBOLS:
         try:
@@ -139,7 +154,7 @@ async def scan_all():
                 print(f"  anomaly {symbol}: {e}")
 
             # ============================================================
-            # 7. نظام التجارب (A/B Testing) — يشمل WAIT FOR CONFIRMATION
+            # 8. نظام التجارب (A/B Testing) — مع منع التكرار
             # ============================================================
             if result["state"] not in ("NO TRADE", "WATCH"):
                 try:
@@ -149,11 +164,17 @@ async def scan_all():
 
                 variants_opened = 0
                 variants_skipped = 0
+                variants_duplicated = 0
 
                 for variant in variants:
                     variant_name = variant.get("name", "baseline")
-                    # config قد يكون dict أو JSON من DB
                     config = variant.get("config") or variant
+
+                    # ⚠️ منع التكرار: نفس (variant, symbol) نشط
+                    if (variant_name, symbol) in open_keys:
+                        print(f"    🔄 [{variant_name}] تجاهل: صفقة نشطة موجودة")
+                        variants_duplicated += 1
+                        continue
 
                     try:
                         allowed, reason = passes_variant(result, config, df_15m_filter)
@@ -168,6 +189,8 @@ async def scan_all():
                                 entry = paper.get("entry_price", 0)
                                 print(f"    💰 [{variant_name}] paper opened @ {entry:.4f}")
                                 variants_opened += 1
+                                # أضف للمفاتيح لمنع فتح صفقة ثانية في نفس الدورة
+                                open_keys.add((variant_name, symbol))
                             else:
                                 print(f"    ⚠️ [{variant_name}] open_paper_trade عاد None")
                         except Exception as e:
@@ -176,16 +199,15 @@ async def scan_all():
                         print(f"    ⏭️ [{variant_name}] تجاهل: {reason}")
                         variants_skipped += 1
 
-                if variants_opened > 0:
-                    print(f"    📊 فُتحت {variants_opened} صفقة (تجاهل {variants_skipped})")
+                if variants_opened > 0 or variants_duplicated > 0:
+                    print(f"    📊 فُتحت {variants_opened} | تجاهل فلترة {variants_skipped} | تجاهل تكرار {variants_duplicated}")
 
             # ============================================================
-            # 8. إدارة دورة حياة الإشارة (baseline فقط)
+            # 9. إدارة دورة حياة الإشارة (baseline فقط)
             # ============================================================
             active_sig = active.get(symbol)
 
             if active_sig:
-                # هل وصل TP/SL؟
                 hit = check_tp_sl(active_sig["id"], active_sig, result["price"])
                 if hit:
                     await notify_lifecycle(symbol, hit, result, active_sig)
@@ -193,7 +215,6 @@ async def scan_all():
                     del active[symbol]
                     print(f"    🎯 signal closed: {symbol} ({hit})")
                 else:
-                    # هل انقلبت الإشارة؟
                     new_dir = "LONG" if "BUY" in result["state"] else "SHORT"
                     if new_dir != active_sig["direction"] and abs(result["score"]) >= 8:
                         invalidate_signal(
@@ -206,13 +227,11 @@ async def scan_all():
                         del active[symbol]
                         print(f"    ❌ signal invalidated: {symbol}")
                     else:
-                        # تحديث الإشارة
                         update_signal(active_sig["id"], result, delta)
                         if delta.get("has_previous") and abs(delta["total_delta"]) >= 3:
                             await notify_delta(symbol, result, delta)
                             print(f"    📊 signal updated: {symbol} (Δ{delta['total_delta']:+d})")
             else:
-                # لا توجد إشارة نشطة — هل نفتح واحدة؟
                 if abs(result["score"]) >= MIN_NOTIFY_SCORE and result["state"] != "NO TRADE":
                     should_open = True
 
@@ -244,7 +263,6 @@ async def scan_all():
                         })
                         print(f"    🆕 signal opened: {symbol} ({result['state']})")
 
-            # تحديث الحالة الأخيرة
             _last_states[symbol] = (result["state"], result["score"])
 
         except Exception as e:
