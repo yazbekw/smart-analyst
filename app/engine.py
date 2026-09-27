@@ -25,18 +25,13 @@ def _atr(df, length=14):
 
 
 def _atr_safe(df_1h, df_15m):
-    """
-    يحسب ATR ذكياً:
-    - يستخدم 1H أولاً (أوسع، أقل ضجيجاً)
-    - إذا لم يتوفر، يستخدم 15M مع معامل تعويضي
-    """
+    """ATR من 1H أولاً، ثم 15M×2"""
     atr_1h = _atr(df_1h, length=14)
     if atr_1h and atr_1h > 0:
         return atr_1h, "1H"
 
     atr_15m = _atr(df_15m, length=14)
     if atr_15m and atr_15m > 0:
-        # 15M ATR × 2 ≈ 1H ATR تقريباً
         return atr_15m * 2.0, "15M×2"
 
     return None, "none"
@@ -44,22 +39,16 @@ def _atr_safe(df_1h, df_15m):
 
 def calculate_levels(df_1h, df_15m, state):
     """
-    حساب المستويات مع SL أوسع بكثير:
-    
-    - ATR من 1H (أوسع، أقل ضجيجاً)
-    - SL = 3.5 ATR (كان 1.5)
-    - TP1 = 5.0 ATR (R:R = 1.43)
-    - TP2 = 8.0 ATR
-    - TP3 = 12.0 ATR
+    SL = 3.5 ATR (أوسع)
+    TP1 = 5.0 ATR (R:R = 1.43)
     """
     try:
         price = float(df_15m["close"].iloc[-1])
         atr, atr_source = _atr_safe(df_1h, df_15m)
 
         if atr is None or atr == 0:
-            atr = price * 0.01  # 1% احتياطي
+            atr = price * 0.01
 
-        # حد أدنى: SL لا يقل عن 0.8% من السعر
         min_sl_distance = price * 0.008
         sl_distance = max(atr * 3.5, min_sl_distance)
 
@@ -101,7 +90,6 @@ def calculate_levels(df_1h, df_15m, state):
 
 
 def _safe_call(fn, *args, **kwargs):
-    """استدعاء آمن لدوال الإشارات"""
     try:
         r = fn(*args, **kwargs)
         if r is None or len(r) != 2:
@@ -110,6 +98,17 @@ def _safe_call(fn, *args, **kwargs):
     except Exception as e:
         print(f"[signal {fn.__name__}] {e}")
         return 0, None
+
+
+def _state(s):
+    """تحديد الحالة بناءً على النقاط"""
+    if s >= 25: return "STRONG BUY SETUP"
+    if s >= 18: return "BUY SETUP"
+    if s >= 10: return "WAIT FOR CONFIRMATION"
+    if s >= 3: return "WATCH"
+    if s <= -25: return "STRONG SELL SETUP"
+    if s <= -18: return "SELL SETUP"
+    return "NO TRADE"
 
 
 # ============================================================
@@ -267,32 +266,30 @@ def analyze_symbol(symbol: str, df_btc=None) -> dict:
     score = sum(breakdown.values())
 
     # ============================================================
-    # States
+    # فلترة Regime — خصم نقاط (بدلاً من NO TRADE)
     # ============================================================
-    def _state(s):
-        if s >= 25: return "STRONG BUY SETUP"
-        if s >= 18: return "BUY SETUP"
-        if s >= 10: return "WAIT FOR CONFIRMATION"
-        if s >= 3: return "WATCH"
-        if s <= -25: return "STRONG SELL SETUP"
-        if s <= -18: return "SELL SETUP"
-        return "NO TRADE"
-
-    state = _state(score)
-
-    # ============================================================
-    # فلترة الـ Regime (جديد)
-    # ============================================================
-    block_reason = None
+    # بدلاً من تحويل الإشارة إلى NO TRADE، نخصم نقاط
+    # هذا يعكس الحالة بوضوح في التقرير
 
     if regime == "low_vol":
-        block_reason = "السوق منخفض التقلب — صفقات ضعيفة"
+        breakdown["momentum"] -= 4
+        breakdown["structure"] -= 3
+        breakdown["context"] -= 3
+        warnings.append("⚠️ تقلب منخفض (-10 نقاط)")
 
     if adx_val > 0 and adx_val < 20:
-        block_reason = f"ADX ضعيف ({adx_val}) — سوق جانبي"
+        breakdown["trend"] -= 3
+        breakdown["momentum"] -= 3
+        warnings.append(f"⚠️ ADX ضعيف ({adx_val}) (-6 نقاط)")
 
     if regime == "high_vol":
-        block_reason = "تقلب عالٍ — مخاطرة مرتفعة"
+        breakdown["risk"] -= 4
+        breakdown["momentum"] -= 3
+        warnings.append("⚠️ تقلب عالٍ (-7 نقاط)")
+
+    # إعادة حساب Score
+    score = sum(breakdown.values())
+    state = _state(score)
 
     # ============================================================
     # Warnings تلقائية
@@ -305,27 +302,29 @@ def analyze_symbol(symbol: str, df_btc=None) -> dict:
         warnings.append("السوق جانبي — احذر الاختراقات الكاذبة")
 
     # ============================================================
-    # حساب المستويات
+    # حساب المستويات (للإشارات القوية فقط)
     # ============================================================
     levels = None
     if state in ("STRONG BUY SETUP", "BUY SETUP", "STRONG SELL SETUP", "SELL SETUP"):
-        if not block_reason:
-            levels = calculate_levels(df_1h, df_15m, state)
+        levels = calculate_levels(df_1h, df_15m, state)
 
-            if levels:
-                s, r = _safe_call(sig_rr_ratio, price,
-                                  levels["stop_loss"], levels["tp1"])
-                breakdown["risk"] += s
-                if r:
-                    if s < 0: warnings.append(r)
-                    else: reasons.append(r)
+        if levels:
+            s, r = _safe_call(sig_rr_ratio, price,
+                              levels["stop_loss"], levels["tp1"])
+            breakdown["risk"] += s
+            if r:
+                if s < 0: warnings.append(r)
+                else: reasons.append(r)
 
-                s, r = _safe_call(sig_resistance_close, df_15m)
-                breakdown["risk"] += s
-                if r: warnings.append(r)
-        else:
-            warnings.append(f"🚫 {block_reason}")
-            state = "NO TRADE"
+            s, r = _safe_call(sig_resistance_close, df_15m)
+            breakdown["risk"] += s
+            if r: warnings.append(r)
+
+    # ============================================================
+    # إعادة حساب نهائي
+    # ============================================================
+    score = sum(breakdown.values())
+    state = _state(score)
 
     # ============================================================
     # 5M — تحسين الدخول
@@ -346,18 +345,9 @@ def analyze_symbol(symbol: str, df_btc=None) -> dict:
         except Exception:
             pass
 
-    # ============================================================
-    # إعادة حساب score
-    # ============================================================
+    # إعادة حساب نهائي بعد 5M
     score = sum(breakdown.values())
     state = _state(score)
-
-    # إعادة فلترة بعد Risk
-    if state in ("STRONG BUY SETUP", "BUY SETUP") and block_reason:
-        state = "NO TRADE"
-        levels = None
-        if f"🚫 {block_reason}" not in warnings:
-            warnings.append(f"🚫 {block_reason}")
 
     # ============================================================
     # النتيجة
@@ -395,7 +385,6 @@ def analyze_symbol(symbol: str, df_btc=None) -> dict:
                 "warnings": warnings,
                 "levels": levels,
                 "regime": regime_info,
-                "block_reason": block_reason,
             },
         })
     except Exception as e:
