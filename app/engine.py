@@ -37,35 +37,34 @@ def _atr_safe(df_1h, df_15m):
     return None, "none"
 
 
-def calculate_levels(df_1h, df_15m, state):
+def calculate_levels(df_1h, df_15m, state, symbol="BTC/USDT"):
     """
-    SL = 3.5 ATR (أوسع)
-    TP1 = 5.0 ATR (R:R = 1.43)
+    ⚠️ نظام ثابت: SL = 1% | TP1 = 1% | TP2 = 2% | TP3 = 3%
+    لا يعتمد على ATR.
     """
     try:
         price = float(df_15m["close"].iloc[-1])
-        atr, atr_source = _atr_safe(df_1h, df_15m)
 
-        if atr is None or atr == 0:
-            atr = price * 0.01
-
-        min_sl_distance = price * 0.008
-        sl_distance = max(atr * 3.5, min_sl_distance)
+        # ⚠️ نسب ثابتة
+        SL_PCT = 1.0    # -1%
+        TP1_PCT = 1.0   # +1%
+        TP2_PCT = 2.0   # +2%
+        TP3_PCT = 3.0   # +3%
 
         if "BUY" in state:
-            entry_low = price - atr * 0.3
-            entry_high = price + atr * 0.2
-            sl = price - sl_distance
-            tp1 = price + sl_distance * 1.43
-            tp2 = price + sl_distance * 2.29
-            tp3 = price + sl_distance * 3.43
+            entry_low = price * 0.999   # -0.1%
+            entry_high = price * 1.001  # +0.1%
+            sl = price * (1 - SL_PCT / 100)
+            tp1 = price * (1 + TP1_PCT / 100)
+            tp2 = price * (1 + TP2_PCT / 100)
+            tp3 = price * (1 + TP3_PCT / 100)
         elif "SELL" in state:
-            entry_low = price - atr * 0.2
-            entry_high = price + atr * 0.3
-            sl = price + sl_distance
-            tp1 = price - sl_distance * 1.43
-            tp2 = price - sl_distance * 2.29
-            tp3 = price - sl_distance * 3.43
+            entry_low = price * 0.999
+            entry_high = price * 1.001
+            sl = price * (1 + SL_PCT / 100)
+            tp1 = price * (1 - TP1_PCT / 100)
+            tp2 = price * (1 - TP2_PCT / 100)
+            tp3 = price * (1 - TP3_PCT / 100)
         else:
             return None
 
@@ -79,10 +78,11 @@ def calculate_levels(df_1h, df_15m, state):
             "tp1": round(tp1, 6),
             "tp2": round(tp2, 6),
             "tp3": round(tp3, 6),
-            "rr": round(rr, 2),
-            "atr": round(atr, 6),
-            "atr_source": atr_source,
-            "sl_pct": round(sl_distance / price * 100, 3),
+            "rr": round(rr, 2),  # ← 1.0
+            "sl_pct": SL_PCT,
+            "tp1_pct": TP1_PCT,
+            "tp2_pct": TP2_PCT,
+            "tp3_pct": TP3_PCT,
         }
     except Exception as e:
         print(f"[calculate_levels] {e}")
