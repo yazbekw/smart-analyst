@@ -1,6 +1,8 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
-from fastapi import FastAPI, Request, HTTPException
+import asyncio
+
+from fastapi import FastAPI, Request, HTTPException, Response
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -18,22 +20,33 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 
+# ============================================================
+# Lifespan
+# ============================================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     start_scheduler()
-    try:
-        await scan_all()
-    except Exception as e:
-        print(f"⚠️ first scan error: {e}")
+
+    # شغّل أول دورة في الخلفية — لا تحجب startup
+    asyncio.create_task(scan_all())
+
     yield
 
 
+# ============================================================
+# App
+# ============================================================
 app = FastAPI(title="Smart Market Analyst", lifespan=lifespan)
-app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+
+app.mount(
+    "/static",
+    StaticFiles(directory=str(BASE_DIR / "static")),
+    name="static",
+)
 
 
 # ============================================================
-# Pages
+# Root (GET + HEAD)
 # ============================================================
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
@@ -44,8 +57,14 @@ async def dashboard(request: Request):
     })
 
 
+@app.head("/")
+async def head_root():
+    """استجابة HEAD — لـ UptimeRobot"""
+    return Response(status_code=200)
+
+
 # ============================================================
-# Core APIs
+# Status (GET + HEAD)
 # ============================================================
 @app.get("/api/status")
 async def api_status():
@@ -56,6 +75,15 @@ async def api_status():
     }
 
 
+@app.head("/api/status")
+async def head_status():
+    """استجابة HEAD — لـ UptimeRobot"""
+    return Response(status_code=200)
+
+
+# ============================================================
+# Core APIs
+# ============================================================
 @app.get("/api/snapshots")
 async def api_snapshots():
     return get_latest_snapshots()
@@ -90,7 +118,7 @@ async def api_signal_events(limit: int = 50):
 
 
 # ============================================================
-# Paper Trading (NEW)
+# Paper Trading
 # ============================================================
 @app.get("/api/paper/stats")
 async def api_paper_stats():
@@ -109,7 +137,7 @@ async def api_paper_trades(limit: int = 50, status: str = None):
 
 
 # ============================================================
-# Regime (NEW)
+# Regime
 # ============================================================
 @app.get("/api/regime")
 async def api_regime():
@@ -124,7 +152,7 @@ async def api_regime():
 
 
 # ============================================================
-# Backtest (NEW)
+# Backtest
 # ============================================================
 @app.post("/api/backtest/{symbol:path}")
 async def api_backtest(symbol: str, timeframe: str = "1h", lookback: int = 200):
@@ -137,7 +165,7 @@ async def api_backtest(symbol: str, timeframe: str = "1h", lookback: int = 200):
 
 
 # ============================================================
-# OHLCV & Analysis
+# OHLCV & Analyze
 # ============================================================
 @app.get("/api/ohlcv/{symbol:path}")
 async def api_ohlcv(symbol: str, timeframe: str = "15m", limit: int = 100):
@@ -156,7 +184,15 @@ async def api_analyze(symbol: str):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+# ============================================================
+# Manual Scan
+# ============================================================
 @app.post("/api/scan")
 async def api_scan():
     await scan_all()
     return {"status": "done"}
+
+
+@app.head("/api/scan")
+async def head_scan():
+    return Response(status_code=200)
