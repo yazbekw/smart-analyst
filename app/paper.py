@@ -1,9 +1,21 @@
 from datetime import datetime, timezone
 from app.database import get_client
+from app.config import (
+    TRADE_MARGIN_USDT, TRADE_LEVERAGE, TRADE_NOTIONAL_USDT,
+    ENABLE_TAKE_PROFIT, TAKE_PROFIT_USDT,
+    ENABLE_STOP_LOSS, STOP_LOSS_USDT,
+)
 
 
 def open_paper_trade(signal_result, capital=10000, risk_pct=1.0):
-    """يفتح صفقة ورقية — بدون variants"""
+    """
+    ⚠️ نظام جديد:
+    - Margin = $3
+    - Leverage = 30x
+    - Notional = $90
+    - TP = +$0.50
+    - SL = -$2.00
+    """
     lv = signal_result.get("levels") or {}
     if not lv or not lv.get("entry_low"):
         return None
@@ -11,28 +23,35 @@ def open_paper_trade(signal_result, capital=10000, risk_pct=1.0):
     direction = "LONG" if "BUY" in signal_result["state"] else "SHORT"
     entry = (lv["entry_low"] + lv["entry_high"]) / 2.0
 
-    risk_per_unit = abs(entry - lv["stop_loss"])
-    if risk_per_unit == 0:
+    if entry <= 0:
         return None
 
-    risk_amount = capital * (risk_pct / 100.0)
-    size = risk_amount / risk_per_unit
+    # حجم الصفقة من Notional
+    size = TRADE_NOTIONAL_USDT / entry
+
+    # TP/SL بالدولار
+    if direction == "LONG":
+        tp_price = entry + (TAKE_PROFIT_USDT / size)
+        sl_price = entry - (STOP_LOSS_USDT / size)
+    else:
+        tp_price = entry - (TAKE_PROFIT_USDT / size)
+        sl_price = entry + (STOP_LOSS_USDT / size)
 
     try:
         res = get_client().table("paper_trades").insert({
             "symbol": signal_result["symbol"],
             "direction": direction,
             "entry_price": entry,
-            "stop_loss": lv["stop_loss"],
-            "tp1": lv["tp1"],
-            "tp2": lv["tp2"],
-            "tp3": lv["tp3"],
-            "size": round(size, 8),
-            "risk_amount": round(risk_amount, 2),
+            "stop_loss": sl_price,
+            "tp1": tp_price,
+            "tp2": tp_price * (1.02 if direction == "LONG" else 0.98),
+            "tp3": tp_price * (1.03 if direction == "LONG" else 0.97),
+            "size": round(size, 10),
+            "risk_amount": STOP_LOSS_USDT,
             "status": "open",
             "signal_score": signal_result["score"],
             "opened_at": datetime.now(timezone.utc).isoformat(),
-            "variant": "baseline",
+            "variant": "v2",
         }).execute()
         return res.data[0] if res.data else None
     except Exception as e:
@@ -42,11 +61,9 @@ def open_paper_trade(signal_result, capital=10000, risk_pct=1.0):
 
 def check_paper_trades(current_prices: dict):
     """
-    R-Multiple (SL=2%, TP1=1%, TP2=2%, TP3=3%):
-    - SL  = -1.0R
-    - TP1 = +0.5R
-    - TP2 = +1.0R
-    - TP3 = +1.5R
+    فحص الصفقات بناءً على PnL بالدولار:
+    - TP: عند +$0.50
+    - SL: عند -$2.00
     """
     try:
         res = get_client().table("paper_trades").select("*").eq("status", "open").execute()
@@ -61,38 +78,38 @@ def check_paper_trades(current_prices: dict):
         if not price:
             continue
 
+        entry = float(t["entry_price"])
+        size = float(t["size"])
+        direction = t["direction"]
+
+        if direction == "LONG":
+            unrealized_pnl = (price - entry) * size
+        else:
+            unrealized_pnl = (entry - price) * size
+
         hit = None
         exit_price = None
         r_multiple = 0
 
-        if t["direction"] == "LONG":
-            if price <= t["stop_loss"]:
-                hit, exit_price, r_multiple = "sl_hit", t["stop_loss"], -1.0
-            elif price >= t["tp3"]:
-                hit, exit_price, r_multiple = "tp3_hit", t["tp3"], 1.5
-            elif price >= t["tp2"]:
-                hit, exit_price, r_multiple = "tp2_hit", t["tp2"], 1.0
-            elif price >= t["tp1"]:
-                hit, exit_price, r_multiple = "tp1_hit", t["tp1"], 0.5
-        else:
-            if price >= t["stop_loss"]:
-                hit, exit_price, r_multiple = "sl_hit", t["stop_loss"], -1.0
-            elif price <= t["tp3"]:
-                hit, exit_price, r_multiple = "tp3_hit", t["tp3"], 1.5
-            elif price <= t["tp2"]:
-                hit, exit_price, r_multiple = "tp2_hit", t["tp2"], 1.0
-            elif price <= t["tp1"]:
-                hit, exit_price, r_multiple = "tp1_hit", t["tp1"], 0.5
+        # فحص TP
+        if ENABLE_TAKE_PROFIT and unrealized_pnl >= TAKE_PROFIT_USDT:
+            hit = "tp1_hit"
+            exit_price = price
+            r_multiple = round(unrealized_pnl / STOP_LOSS_USDT, 2)
+
+        # فحص SL
+        elif ENABLE_STOP_LOSS and unrealized_pnl <= -STOP_LOSS_USDT:
+            hit = "sl_hit"
+            exit_price = price
+            r_multiple = round(unrealized_pnl / STOP_LOSS_USDT, 2)
 
         if hit:
-            risk_amount = t.get("risk_amount") or 100
-            pnl = risk_amount * r_multiple
-
+            pnl = round(unrealized_pnl, 2)
             try:
                 get_client().table("paper_trades").update({
                     "status": hit,
                     "exit_price": exit_price,
-                    "pnl": round(pnl, 2),
+                    "pnl": pnl,
                     "r_multiple": r_multiple,
                     "closed_at": datetime.now(timezone.utc).isoformat(),
                 }).eq("id", t["id"]).execute()
