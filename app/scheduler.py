@@ -29,21 +29,21 @@ _last_states: dict[str, tuple] = {}
 async def scan_all():
     print("🔄 بدء دورة التحليل...")
 
-    # جلب BTC كمرجع
+    # BTC كمرجع
     try:
         df_btc = fetch_ohlcv(BTC_REFERENCE, "15m", limit=100)
     except Exception as e:
         print(f"⚠️ تعذر جلب BTC: {e}")
         df_btc = None
 
-    # جلب الإشارات النشطة
+    # الإشارات النشطة
     try:
         active = {s["symbol"]: s for s in get_active_signals()}
     except Exception as e:
         print(f"⚠️ تعذر جلب active signals: {e}")
         active = {}
 
-    # منع تكرار صفقات paper
+    # منع تكرار paper trades
     try:
         open_papers = (
             get_client().table("paper_trades").select("symbol")
@@ -128,7 +128,7 @@ async def scan_all():
                 print(f"  anomaly {symbol}: {e}")
 
             # ============================================================
-            # فتح صفقة paper (بدون variants)
+            # فتح صفقة paper
             # ============================================================
             if result["state"] in ("STRONG BUY SETUP", "BUY SETUP",
                                     "STRONG SELL SETUP", "SELL SETUP"):
