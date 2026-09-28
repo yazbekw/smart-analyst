@@ -21,7 +21,6 @@ from app.lifecycle import (
 )
 from app.paper import open_paper_trade, check_paper_trades
 from app.correlation import build_correlation_context
-from app.experiments import get_active_variants, passes_variant
 
 scheduler = AsyncIOScheduler()
 _last_states: dict[str, tuple] = {}
@@ -30,50 +29,33 @@ _last_states: dict[str, tuple] = {}
 async def scan_all():
     print("🔄 بدء دورة التحليل...")
 
-    # ============================================================
-    # 1. جلب Variants النشطة
-    # ============================================================
-    variants = get_active_variants()
-    print(f"📊 Variants نشطة: {len(variants)}")
-
-    # ============================================================
-    # 2. جلب بيانات BTC كمرجع
-    # ============================================================
+    # جلب BTC كمرجع
     try:
         df_btc = fetch_ohlcv(BTC_REFERENCE, "15m", limit=100)
     except Exception as e:
         print(f"⚠️ تعذر جلب BTC: {e}")
         df_btc = None
 
-    # ============================================================
-    # 3. جلب الإشارات النشطة
-    # ============================================================
+    # جلب الإشارات النشطة
     try:
         active = {s["symbol"]: s for s in get_active_signals()}
     except Exception as e:
         print(f"⚠️ تعذر جلب active signals: {e}")
         active = {}
 
-    # ============================================================
-    # 4. جلب الصفقات الورقية المفتوحة (لمنع التكرار)
-    # ============================================================
+    # منع تكرار صفقات paper
     try:
         open_papers = (
-            get_client().table("paper_trades")
-            .select("variant, symbol")
-            .eq("status", "open")
-            .execute()
+            get_client().table("paper_trades").select("symbol")
+            .eq("status", "open").execute()
         ).data or []
-        # مفتاح فريد (variant, symbol)
-        open_keys = {(p["variant"], p["symbol"]) for p in open_papers}
-        print(f"📋 صفقات مفتوحة: {len(open_papers)} (مفاتيح فريدة: {len(open_keys)})")
+        open_symbols = {p["symbol"] for p in open_papers}
+        print(f"📋 صفقات مفتوحة: {len(open_papers)}")
     except Exception as e:
-        print(f"⚠️ تعذر جلب open_papers: {e}")
-        open_keys = set()
+        print(f"⚠️ تعذر جلب open papers: {e}")
+        open_symbols = set()
 
-    # ============================================================
-    # 5. فحص الصفقات الورقية (إغلاق TP/SL)
-    # ============================================================
+    # فحص الصفقات المغلقة
     current_prices = {}
     try:
         for sym in SYMBOLS:
@@ -87,14 +69,11 @@ async def scan_all():
         closed_paper = check_paper_trades(current_prices)
         for ct in closed_paper:
             pnl = ct.get("pnl", 0) or 0
-            variant_tag = ct.get("variant", "?")
-            print(f"    💰 [{variant_tag}] paper closed: {ct['symbol']} {ct['hit']} PnL={pnl:.2f}")
+            print(f"    💰 paper closed: {ct['symbol']} {ct['hit']} PnL={pnl:.2f}")
     except Exception as e:
         print(f"⚠️ paper check: {e}")
 
-    # ============================================================
-    # 6. بناء سياق الترابط
-    # ============================================================
+    # سياق الترابط
     symbols_data = {}
     try:
         for sym in SYMBOLS:
@@ -102,27 +81,23 @@ async def scan_all():
                 symbols_data[sym] = fetch_ohlcv(sym, "15m", limit=50)
             except Exception:
                 symbols_data[sym] = None
-
         correlation_context = build_correlation_context(symbols_data, df_btc)
     except Exception as e:
         print(f"⚠️ correlation: {e}")
         correlation_context = {}
 
     # ============================================================
-    # 7. حلقة التحليل الرئيسية
+    # حلقة التحليل
     # ============================================================
     for symbol in SYMBOLS:
         try:
-            # ---------- التحليل الأساسي ----------
             result = analyze_symbol(symbol, df_btc=df_btc)
-
-            # إضافة سياق الترابط
             result["correlation"] = correlation_context
 
             regime_name = (result.get("regime") or {}).get("regime", "?")
             print(f"  {symbol}: {result['state']} ({result['score']}) [{regime_name}]")
 
-            # ---------- حساب Delta ----------
+            # Delta
             prev = get_previous_snapshot(symbol)
             curr_snap = {
                 "trend_score": result["breakdown"]["trend"],
@@ -137,7 +112,7 @@ async def scan_all():
             }
             delta = compute_delta(prev, curr_snap)
 
-            # ---------- كشف الشواذ ----------
+            # Anomalies
             try:
                 ob = fetch_orderbook(symbol)
                 trades = fetch_trades(symbol, limit=200)
@@ -146,64 +121,31 @@ async def scan_all():
                 for a in detect_anomalies(symbol, df_15m_anom, ob, trades, df_btc):
                     if recently_alerted(symbol, a["type"], minutes=30):
                         continue
-
                     save_anomaly(symbol, a)
                     await notify_anomaly(symbol, a, result["price"])
-                    print(f"    ⚡ anomaly: {symbol} {a['type']} ({a['severity']})")
+                    print(f"    ⚡ anomaly: {symbol} {a['type']}")
             except Exception as e:
                 print(f"  anomaly {symbol}: {e}")
 
             # ============================================================
-            # 8. نظام التجارب (A/B Testing) — مع منع التكرار
+            # فتح صفقة paper (بدون variants)
             # ============================================================
-            if result["state"] not in ("NO TRADE", "WATCH"):
-                try:
-                    df_15m_filter = fetch_ohlcv(symbol, "15m", limit=100)
-                except Exception:
-                    df_15m_filter = None
-
-                variants_opened = 0
-                variants_skipped = 0
-                variants_duplicated = 0
-
-                for variant in variants:
-                    variant_name = variant.get("name", "baseline")
-                    config = variant.get("config") or variant
-
-                    # ⚠️ منع التكرار: نفس (variant, symbol) نشط
-                    if (variant_name, symbol) in open_keys:
-                        print(f"    🔄 [{variant_name}] تجاهل: صفقة نشطة موجودة")
-                        variants_duplicated += 1
-                        continue
-
+            if result["state"] in ("STRONG BUY SETUP", "BUY SETUP",
+                                    "STRONG SELL SETUP", "SELL SETUP"):
+                if symbol not in open_symbols:
                     try:
-                        allowed, reason = passes_variant(result, config, df_15m_filter)
+                        paper = open_paper_trade(result)
+                        if paper:
+                            entry = paper.get("entry_price", 0)
+                            print(f"    💰 paper opened: {symbol} @ {entry:.4f}")
+                            open_symbols.add(symbol)
                     except Exception as e:
-                        print(f"    ❌ [{variant_name}] passes_variant error: {e}")
-                        continue
-
-                    if allowed:
-                        try:
-                            paper = open_paper_trade(result, variant=variant_name)
-                            if paper:
-                                entry = paper.get("entry_price", 0)
-                                print(f"    💰 [{variant_name}] paper opened @ {entry:.4f}")
-                                variants_opened += 1
-                                # أضف للمفاتيح لمنع فتح صفقة ثانية في نفس الدورة
-                                open_keys.add((variant_name, symbol))
-                            else:
-                                print(f"    ⚠️ [{variant_name}] open_paper_trade عاد None")
-                        except Exception as e:
-                            print(f"    ❌ [{variant_name}] paper error: {e}")
-                    else:
-                        print(f"    ⏭️ [{variant_name}] تجاهل: {reason}")
-                        variants_skipped += 1
-
-                if variants_opened > 0 or variants_duplicated > 0:
-                    print(f"    📊 فُتحت {variants_opened} | تجاهل فلترة {variants_skipped} | تجاهل تكرار {variants_duplicated}")
+                        print(f"    ❌ paper error {symbol}: {e}")
+                else:
+                    print(f"    🔄 {symbol}: صفقة مفتوحة موجودة")
 
             # ============================================================
-            # 9. إدارة دورة حياة الإشارة (baseline فقط)
+            # إدارة دورة حياة الإشارة
             # ============================================================
             active_sig = active.get(symbol)
 
@@ -216,11 +158,9 @@ async def scan_all():
                     print(f"    🎯 signal closed: {symbol} ({hit})")
                 else:
                     new_dir = "LONG" if "BUY" in result["state"] else "SHORT"
-                    if new_dir != active_sig["direction"] and abs(result["score"]) >= 8:
+                    if new_dir != active_sig["direction"] and abs(result["score"]) >= 30:
                         invalidate_signal(
-                            active_sig["id"],
-                            symbol,
-                            result["price"],
+                            active_sig["id"], symbol, result["price"],
                             f"انقلاب من {active_sig['direction']} إلى {new_dir}",
                         )
                         await notify_lifecycle(symbol, "invalidated", result, active_sig)
@@ -228,13 +168,12 @@ async def scan_all():
                         print(f"    ❌ signal invalidated: {symbol}")
                     else:
                         update_signal(active_sig["id"], result, delta)
-                        if delta.get("has_previous") and abs(delta["total_delta"]) >= 3:
+                        if delta.get("has_previous") and abs(delta["total_delta"]) >= 5:
                             await notify_delta(symbol, result, delta)
                             print(f"    📊 signal updated: {symbol} (Δ{delta['total_delta']:+d})")
             else:
-                if abs(result["score"]) >= MIN_NOTIFY_SCORE and result["state"] != "NO TRADE":
+                if abs(result["score"]) >= MIN_NOTIFY_SCORE and result["state"] != "WATCH":
                     should_open = True
-
                     if NOTIFY_ONLY_ON_CHANGE:
                         last = _last_states.get(symbol)
                         if last == (result["state"], result["score"]):
@@ -242,10 +181,8 @@ async def scan_all():
 
                     if should_open:
                         open_signal(result)
-
                         priority = "high" if "STRONG" in result["state"] else "default"
                         await notify_full_analysis(result, delta=delta, priority=priority)
-
                         save_signal({
                             "symbol": symbol,
                             "state": result["state"],
@@ -275,11 +212,9 @@ async def scan_all():
 
 def start_scheduler():
     scheduler.add_job(
-        scan_all,
-        "interval",
+        scan_all, "interval",
         minutes=SCAN_INTERVAL_MINUTES,
-        id="scan_all",
-        replace_existing=True,
+        id="scan_all", replace_existing=True,
     )
     scheduler.start()
     print(f"⏱️ Scheduler يعمل كل {SCAN_INTERVAL_MINUTES} دقيقة")
