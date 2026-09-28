@@ -25,12 +25,8 @@ def _atr(df, length=14):
 
 def calculate_levels(df_15m, state, symbol="BTC/USDT"):
     """
-    ⚠️ نظام ثابت:
-    - SL = 2% (مخاطرة)
-    - TP1 = 1% (ربح)
-    - TP2 = 2%
-    - TP3 = 3%
-    - R-Multiple: TP1=+0.5R, TP2=+1R, TP3=+1.5R, SL=-1R
+    SL = 2% | TP1 = 1% | TP2 = 2% | TP3 = 3%
+    R-Multiple: SL=-1R, TP1=+0.5R, TP2=+1R, TP3=+1.5R
     """
     try:
         price = float(df_15m["close"].iloc[-1])
@@ -40,7 +36,7 @@ def calculate_levels(df_15m, state, symbol="BTC/USDT"):
         TP2_PCT = 2.0
         TP3_PCT = 3.0
 
-        if "BUY" in state:
+        if "BUY" in state or state == "EARLY OPPORTUNITY":
             entry_low = price * 0.999
             entry_high = price * 1.001
             sl = price * (1 - SL_PCT / 100)
@@ -90,16 +86,41 @@ def _safe_call(fn, *args, **kwargs):
         return 0, None
 
 
-def _state(s):
-    if s >= 40: return "STRONG BUY SETUP"
-    if s >= 30: return "BUY SETUP"
-    if s <= -40: return "STRONG SELL SETUP"
-    if s <= -30: return "SELL SETUP"
-    return "WATCH"
+def _context_quality(regime, adx_val, breakdown):
+    """
+    حساب جودة السياق (Context Quality).
+    النطاق: -8 إلى +8
+    """
+    cq = 0
+
+    # Regime
+    if regime == "trending": cq += 3
+    elif regime == "neutral": cq += 1
+    elif regime == "ranging": cq -= 1
+    elif regime == "low_vol": cq -= 2
+    elif regime == "high_vol": cq -= 2
+
+    # ADX
+    if adx_val >= 30: cq += 3
+    elif adx_val >= 25: cq += 2
+    elif adx_val >= 20: cq += 1
+    elif adx_val >= 15: cq += 0
+    else: cq -= 1
+
+    # Order Flow
+    of = breakdown.get("orderflow", 0)
+    if of > 0: cq += 1
+    elif of < -3: cq -= 1
+
+    # Volume
+    vol = breakdown.get("volume", 0)
+    if vol > 0: cq += 1
+    elif vol < -2: cq -= 1
+
+    return cq
 
 
 def _build_result(symbol, price, score, state, breakdown, reasons, warnings, levels, regime_info):
-    """يبني النتيجة ويحفظ الـ snapshot"""
     result = {
         "symbol": symbol,
         "price": round(price, 6),
@@ -268,55 +289,74 @@ def analyze_symbol(symbol: str, df_btc=None) -> dict:
     score = sum(breakdown.values())
 
     # ============================================================
-    # 🔒 الفلترة الصارمة — 4 شروط
+    # حساب Context Quality
     # ============================================================
-
-    # شرط 1: Score عالٍ جداً
-    if score < 30:
-        warnings.append(f"🔍 Score {score} < 30 — غير كافٍ")
-        return _build_result(symbol, price, score, "WATCH",
-                            breakdown, reasons, warnings, None, regime_info)
-
-    # شرط 2: Regime مناسب
-    if regime == "low_vol":
-        warnings.append(f"🔍 Regime={regime} — تقلب منخفض")
-        return _build_result(symbol, price, score, "WATCH",
-                            breakdown, reasons, warnings, None, regime_info)
-
-    if regime == "high_vol":
-        warnings.append(f"🔍 Regime={regime} — تقلب عالٍ")
-        return _build_result(symbol, price, score, "WATCH",
-                            breakdown, reasons, warnings, None, regime_info)
-
-    # شرط 3: ADX قوي
-    if adx_val > 0 and adx_val < 25:
-        warnings.append(f"🔍 ADX {adx_val} < 25 — لا اتجاه")
-        return _build_result(symbol, price, score, "WATCH",
-                            breakdown, reasons, warnings, None, regime_info)
-
-    # شرط 4: Order Flow ليس سلبياً
-    if breakdown.get("orderflow", 0) <= -3:
-        warnings.append(f"🔍 Order Flow سلبي ({breakdown['orderflow']})")
-        return _build_result(symbol, price, score, "WATCH",
-                            breakdown, reasons, warnings, None, regime_info)
+    cq = _context_quality(regime, adx_val, breakdown)
 
     # ============================================================
-    # ✅ اجتاز كل الشروط — إشارة قوية
+    # 🎯 الفلترة المتدرجة — 5 مستويات
     # ============================================================
-    reasons.append(f"🎯 إشارة قوية: score={score}, ADX={adx_val:.1f}, regime={regime}")
 
-    state = _state(score)
-    levels = calculate_levels(df_15m, state, symbol=symbol)
+    # المستوى 1: STRONG BUY
+    if score >= 30 and cq >= 5:
+        state = "STRONG BUY SETUP"
+        reasons.append(f"🎯 إشارة قوية: score={score}, cq={cq}")
 
-    if levels:
-        s, r = _safe_call(sig_rr_ratio, price, levels["stop_loss"], levels["tp1"])
-        breakdown["risk"] += s
-        if r:
-            if s < 0: warnings.append(r)
-            else: reasons.append(r)
+    # المستوى 2: BUY SETUP
+    elif score >= 22 and cq >= 2:
+        state = "BUY SETUP"
+        reasons.append(f"✅ فرصة: score={score}, cq={cq}")
 
+    # المستوى 3: EARLY OPPORTUNITY
+    elif score >= 15 and cq >= 0:
+        state = "EARLY OPPORTUNITY"
+        warnings.append(f"⏳ فرصة مبكرة: score={score}, cq={cq}")
+        warnings.append("انتظر تأكيد قبل الدخول")
+
+    # المستوى 4: STRONG SELL
+    elif score <= -30 and cq >= 5:
+        state = "STRONG SELL SETUP"
+        reasons.append(f"🔴 إشارة بيع قوية: score={score}, cq={cq}")
+
+    # المستوى 5: SELL SETUP
+    elif score <= -22 and cq >= 2:
+        state = "SELL SETUP"
+        reasons.append(f"🔴 فرصة بيع: score={score}, cq={cq}")
+
+    # WATCH
+    else:
+        state = "WATCH"
+        if -15 < score < 15:
+            warnings.append(f"⏸️ سوق جانبي: score={score}")
+        if cq < 0:
+            warnings.append(f"⚠️ سياق ضعيف: cq={cq}")
+
+    # ============================================================
+    # حساب المستويات
+    # ============================================================
+    levels = None
+    if state in ("STRONG BUY SETUP", "BUY SETUP", "EARLY OPPORTUNITY",
+                 "STRONG SELL SETUP", "SELL SETUP"):
+        levels = calculate_levels(df_15m, state, symbol=symbol)
+
+        if levels:
+            s, r = _safe_call(sig_rr_ratio, price, levels["stop_loss"], levels["tp1"])
+            breakdown["risk"] += s
+            if r:
+                if s < 0: warnings.append(r)
+                else: reasons.append(r)
+
+    # إعادة حساب Score
     score = sum(breakdown.values())
-    state = _state(score)
+
+    # إعادة تقييم الحالة بعد Risk
+    if state == "STRONG BUY SETUP" and score < 30:
+        state = "BUY SETUP"
+    if state == "BUY SETUP" and score < 22:
+        state = "EARLY OPPORTUNITY"
+    if state == "EARLY OPPORTUNITY" and score < 15:
+        state = "WATCH"
+        levels = None
 
     return _build_result(symbol, price, score, state,
                         breakdown, reasons, warnings, levels, regime_info)
