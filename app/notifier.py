@@ -1,7 +1,12 @@
 import asyncio
 import httpx
+from datetime import datetime, timezone
+
 from app.config import (
     NTFY_TOPIC, NTFY_SERVER, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
+    TRADE_NOTIFY_BOT_TOKEN, TRADE_NOTIFY_CHAT_ID,
+    TRADE_MARGIN_USDT, TRADE_LEVERAGE,
+    TAKE_PROFIT_USDT, STOP_LOSS_USDT,
 )
 from app.reporter import build_full_report
 
@@ -22,7 +27,6 @@ async def notify_ntfy(title, message, priority="default", tags=None):
 
     url = f"{NTFY_SERVER}/{NTFY_TOPIC}"
 
-    # 3 محاولات
     for attempt in range(3):
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -32,25 +36,22 @@ async def notify_ntfy(title, message, priority="default", tags=None):
                     headers=headers,
                 )
                 if response.status_code < 400:
-                    print(f"[ntfy] ✅ أُرسل (attempt {attempt + 1})")
+                    print(f"[ntfy] ✅ أُرسل (محاولة {attempt + 1})")
                     return
                 else:
-                    print(f"[ntfy] ⚠️ HTTP {response.status_code}: {response.text[:100]}")
+                    print(f"[ntfy] ⚠️ HTTP {response.status_code}")
         except Exception as e:
             print(f"[ntfy] ❌ محاولة {attempt + 1}: {type(e).__name__}: {e}")
             if attempt < 2:
-                await asyncio.sleep(2)  # انتظر ثانيتين قبل إعادة المحاولة
+                await asyncio.sleep(3)
 
     print(f"[ntfy] ❌ فشلت جميع المحاولات")
-        
 
 
 async def notify_telegram(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-
-    # Telegram يدعم 4096 حرف لكل رسالة — نقسم إن لزم
     chunks = [message[i:i+3800] for i in range(0, len(message), 3800)]
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -65,6 +66,68 @@ async def notify_telegram(message):
         print(f"[telegram] {e}")
 
 
+async def notify_trade_event(event_type: str, trade: dict):
+    """
+    إشعار فتح/إغلاق صفقة عبر بوت منفصل.
+    event_type: "opened" أو "closed"
+    """
+    if not TRADE_NOTIFY_BOT_TOKEN or not TRADE_NOTIFY_CHAT_ID:
+        return
+
+    symbol = trade.get("symbol", "?")
+    direction = trade.get("direction", "?")
+    entry = trade.get("entry_price", 0)
+    size = trade.get("size", 0)
+
+    if event_type == "opened":
+        emoji = "🟢" if direction == "LONG" else "🔴"
+        notional = float(entry) * float(size)
+        lines = [
+            f"{emoji} <b>صفقة جديدة فُتحت</b>",
+            "━━━━━━━━━━━━━━━━━━━",
+            f"📌 {symbol} — <b>{direction}</b>",
+            f"💰 الدخول: <code>{entry}</code>",
+            f"📊 الحجم: <code>{float(size):.8f}</code>",
+            f"💵 Margin: ${TRADE_MARGIN_USDT}",
+            f"⚙️ Leverage: {TRADE_LEVERAGE}x",
+            f"💼 Notional: ${notional:.2f}",
+            "",
+            f"🎯 TP: +${TAKE_PROFIT_USDT}",
+            f"🛑 SL: -${STOP_LOSS_USDT}",
+            "",
+            f"📊 Score: {trade.get('signal_score', '?')}",
+            f"🕐 {datetime.now(timezone.utc).strftime('%H:%M')} UTC",
+        ]
+    else:
+        status = trade.get("hit", "closed")
+        pnl = trade.get("pnl", 0)
+        emoji = "🎯" if pnl > 0 else "🛑"
+        lines = [
+            f"{emoji} <b>صفقة أُغلقت — {status}</b>",
+            "━━━━━━━━━━━━━━━━━━━",
+            f"📌 {symbol} — {direction}",
+            f"💰 الدخول: <code>{entry}</code>",
+            f"💵 الخروج: <code>{trade.get('exit_price', 0)}</code>",
+            f"📊 PnL: <b>{'+' if pnl > 0 else ''}${pnl:.2f}</b>",
+            "",
+            f"🕐 {datetime.now(timezone.utc).strftime('%H:%M')} UTC",
+        ]
+
+    text = "\n".join(lines)
+    url = f"https://api.telegram.org/bot{TRADE_NOTIFY_BOT_TOKEN}/sendMessage"
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            await client.post(url, json={
+                "chat_id": TRADE_NOTIFY_CHAT_ID,
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            })
+    except Exception as e:
+        print(f"[notify_trade] {e}")
+
+
 def _plain(text):
     for t in ["<b>", "</b>", "<code>", "</code>", "<i>", "</i>"]:
         text = text.replace(t, "")
@@ -73,9 +136,6 @@ def _plain(text):
 
 async def notify_full_analysis(result: dict, delta: dict | None = None,
                                 priority: str = "default"):
-    """
-    إشعار كامل — تقرير مفصل كامل.
-    """
     title = f"{result['state']} — {result['symbol']}"
     text = build_full_report(result, delta=delta)
 
@@ -92,10 +152,7 @@ async def notify_full_analysis(result: dict, delta: dict | None = None,
     )
 
 
-# ============ Legacy functions (يمكن حذفها لاحقاً) ============
-
 async def notify_signal(result, priority="default"):
-    """Alias لـ notify_full_analysis"""
     await notify_full_analysis(result, delta=None, priority=priority)
 
 
@@ -140,7 +197,7 @@ async def notify_lifecycle(symbol, event, result, signal):
     if event == "sl_hit":
         lines += ["", "🛑 يُنصح بمراجعة الصفقة والخروج."]
     if event in ("tp1_hit", "tp2_hit", "tp3_hit"):
-        lines += ["", "✅ يمكن تحريك الوقف إلى نقطة التعادل أو الخروج جزئياً."]
+        lines += ["", "✅ يمكن تحريك الوقف إلى نقطة التعادل."]
 
     text = "\n".join(lines)
     priority = "urgent" if event in ("sl_hit", "invalidated") else "high"
