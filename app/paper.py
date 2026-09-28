@@ -2,8 +2,8 @@ from datetime import datetime, timezone
 from app.database import get_client
 
 
-def open_paper_trade(signal_result, capital=10000, risk_pct=1.0, variant="baseline"):
-    """يفتح صفقة ورقية مع R-Multiple"""
+def open_paper_trade(signal_result, capital=10000, risk_pct=1.0):
+    """يفتح صفقة ورقية — بدون variants"""
     lv = signal_result.get("levels") or {}
     if not lv or not lv.get("entry_low"):
         return None
@@ -32,11 +32,7 @@ def open_paper_trade(signal_result, capital=10000, risk_pct=1.0, variant="baseli
             "status": "open",
             "signal_score": signal_result["score"],
             "opened_at": datetime.now(timezone.utc).isoformat(),
-            "variant": variant,  # ← جديد
-            "config_snapshot": {
-                "min_score": signal_result.get("score"),
-                "regime": (signal_result.get("regime") or {}).get("regime"),
-            },
+            "variant": "baseline",
         }).execute()
         return res.data[0] if res.data else None
     except Exception as e:
@@ -46,11 +42,11 @@ def open_paper_trade(signal_result, capital=10000, risk_pct=1.0, variant="baseli
 
 def check_paper_trades(current_prices: dict):
     """
-    فحص الصفقات مع R-Multiple صحيح:
-    - TP1 = +2.0R
-    - TP2 = +3.5R
-    - TP3 = +5.5R
+    R-Multiple (SL=2%, TP1=1%, TP2=2%, TP3=3%):
     - SL  = -1.0R
+    - TP1 = +0.5R
+    - TP2 = +1.0R
+    - TP3 = +1.5R
     """
     try:
         res = get_client().table("paper_trades").select("*").eq("status", "open").execute()
@@ -73,20 +69,20 @@ def check_paper_trades(current_prices: dict):
             if price <= t["stop_loss"]:
                 hit, exit_price, r_multiple = "sl_hit", t["stop_loss"], -1.0
             elif price >= t["tp3"]:
-                hit, exit_price, r_multiple = "tp3_hit", t["tp3"], 5.5
+                hit, exit_price, r_multiple = "tp3_hit", t["tp3"], 1.5
             elif price >= t["tp2"]:
-                hit, exit_price, r_multiple = "tp2_hit", t["tp2"], 3.5
+                hit, exit_price, r_multiple = "tp2_hit", t["tp2"], 1.0
             elif price >= t["tp1"]:
-                hit, exit_price, r_multiple = "tp1_hit", t["tp1"], 2.0
+                hit, exit_price, r_multiple = "tp1_hit", t["tp1"], 0.5
         else:
             if price >= t["stop_loss"]:
                 hit, exit_price, r_multiple = "sl_hit", t["stop_loss"], -1.0
             elif price <= t["tp3"]:
-                hit, exit_price, r_multiple = "tp3_hit", t["tp3"], 5.5
+                hit, exit_price, r_multiple = "tp3_hit", t["tp3"], 1.5
             elif price <= t["tp2"]:
-                hit, exit_price, r_multiple = "tp2_hit", t["tp2"], 3.5
+                hit, exit_price, r_multiple = "tp2_hit", t["tp2"], 1.0
             elif price <= t["tp1"]:
-                hit, exit_price, r_multiple = "tp1_hit", t["tp1"], 2.0
+                hit, exit_price, r_multiple = "tp1_hit", t["tp1"], 0.5
 
         if hit:
             risk_amount = t.get("risk_amount") or 100
@@ -108,7 +104,6 @@ def check_paper_trades(current_prices: dict):
 
 
 def get_paper_stats(initial_capital=10000):
-    """إحصائيات Paper Trading"""
     try:
         closed = get_client().table("paper_trades").select("*").neq("status", "open").execute().data or []
         open_t = get_client().table("paper_trades").select("*").eq("status", "open").execute().data or []
@@ -118,17 +113,10 @@ def get_paper_stats(initial_capital=10000):
 
     if not closed:
         return {
-            "initial_capital": initial_capital,
-            "equity": initial_capital,
-            "total_pnl": 0,
-            "total_pnl_pct": 0,
-            "win_rate": 0,
-            "total_trades": 0,
-            "wins": 0,
-            "losses": 0,
-            "open_trades": len(open_t),
-            "avg_win": 0,
-            "avg_loss": 0,
+            "initial_capital": initial_capital, "equity": initial_capital,
+            "total_pnl": 0, "total_pnl_pct": 0, "win_rate": 0,
+            "total_trades": 0, "wins": 0, "losses": 0,
+            "open_trades": len(open_t), "avg_win": 0, "avg_loss": 0,
             "profit_factor": 0,
         }
 
