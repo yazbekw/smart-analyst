@@ -11,6 +11,7 @@ from app.notifier import (
     notify_lifecycle,
     notify_signal,
     notify_delta,
+    notify_trade_event,
 )
 from app.database import save_signal, get_client
 from app.delta import get_previous_snapshot, compute_delta
@@ -43,7 +44,7 @@ async def scan_all():
         print(f"⚠️ تعذر جلب active signals: {e}")
         active = {}
 
-    # منع تكرار paper trades
+    # الصفقات المفتوحة
     try:
         open_papers = (
             get_client().table("paper_trades").select("symbol")
@@ -70,6 +71,7 @@ async def scan_all():
         for ct in closed_paper:
             pnl = ct.get("pnl", 0) or 0
             print(f"    💰 paper closed: {ct['symbol']} {ct['hit']} PnL={pnl:.2f}")
+            await notify_trade_event("closed", ct)
     except Exception as e:
         print(f"⚠️ paper check: {e}")
 
@@ -86,9 +88,7 @@ async def scan_all():
         print(f"⚠️ correlation: {e}")
         correlation_context = {}
 
-    # ============================================================
     # حلقة التحليل
-    # ============================================================
     for symbol in SYMBOLS:
         try:
             result = analyze_symbol(symbol, df_btc=df_btc)
@@ -127,9 +127,7 @@ async def scan_all():
             except Exception as e:
                 print(f"  anomaly {symbol}: {e}")
 
-            # ============================================================
             # فتح صفقة paper
-            # ============================================================
             if result["state"] in ("STRONG BUY SETUP", "BUY SETUP",
                                     "STRONG SELL SETUP", "SELL SETUP"):
                 if symbol not in open_symbols:
@@ -139,14 +137,13 @@ async def scan_all():
                             entry = paper.get("entry_price", 0)
                             print(f"    💰 paper opened: {symbol} @ {entry:.4f}")
                             open_symbols.add(symbol)
+                            await notify_trade_event("opened", paper)
                     except Exception as e:
                         print(f"    ❌ paper error {symbol}: {e}")
                 else:
                     print(f"    🔄 {symbol}: صفقة مفتوحة موجودة")
 
-            # ============================================================
             # إدارة دورة حياة الإشارة
-            # ============================================================
             active_sig = active.get(symbol)
 
             if active_sig:
