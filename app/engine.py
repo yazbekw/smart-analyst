@@ -298,28 +298,28 @@ def analyze_symbol(symbol: str, df_btc=None) -> dict:
     # ============================================================
 
     # المستوى 1: STRONG BUY
-    if score >= 30 and cq >= 5:
+    if score >= 22 and cq >= 5:
         state = "STRONG BUY SETUP"
         reasons.append(f"🎯 إشارة قوية: score={score}, cq={cq}")
 
     # المستوى 2: BUY SETUP
-    elif score >= 22 and cq >= 2:
+    elif score >= 15 and cq >= 2:
         state = "BUY SETUP"
         reasons.append(f"✅ فرصة: score={score}, cq={cq}")
 
     # المستوى 3: EARLY OPPORTUNITY
-    elif score >= 15 and cq >= 0:
+    elif score >= 8 and cq >= 0:
         state = "EARLY OPPORTUNITY"
         warnings.append(f"⏳ فرصة مبكرة: score={score}, cq={cq}")
         warnings.append("انتظر تأكيد قبل الدخول")
 
     # المستوى 4: STRONG SELL
-    elif score <= -30 and cq >= 5:
+    elif score <= -22 and cq >= 5:
         state = "STRONG SELL SETUP"
         reasons.append(f"🔴 إشارة بيع قوية: score={score}, cq={cq}")
 
     # المستوى 5: SELL SETUP
-    elif score <= -22 and cq >= 2:
+    elif score <= -15 and cq >= 2:
         state = "SELL SETUP"
         reasons.append(f"🔴 فرصة بيع: score={score}, cq={cq}")
 
