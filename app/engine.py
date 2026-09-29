@@ -39,13 +39,16 @@ def calculate_levels(df_15m, state, symbol="BTC/USDT"):
         TP2_PCT = 2.0
         TP3_PCT = 3.0
 
-        if "BUY" in state or state == "EARLY OPPORTUNITY":
+        # ✅ BUY / EARLY BUY
+        if "BUY" in state:
             entry_low = price * 0.999
             entry_high = price * 1.001
             sl = price * (1 - SL_PCT / 100)
             tp1 = price * (1 + TP1_PCT / 100)
             tp2 = price * (1 + TP2_PCT / 100)
             tp3 = price * (1 + TP3_PCT / 100)
+
+        # ✅ SELL / EARLY SELL
         elif "SELL" in state:
             entry_low = price * 0.999
             entry_high = price * 1.001
@@ -53,6 +56,7 @@ def calculate_levels(df_15m, state, symbol="BTC/USDT"):
             tp1 = price * (1 - TP1_PCT / 100)
             tp2 = price * (1 - TP2_PCT / 100)
             tp3 = price * (1 - TP3_PCT / 100)
+
         else:
             return None
 
@@ -90,7 +94,7 @@ def _safe_call(fn, *args, **kwargs):
 
 
 def _context_quality(regime, adx_val, breakdown):
-    """جودة السياق (0-8)"""
+    """جودة السياق"""
     cq = 0
 
     if regime == "trending": cq += 3
@@ -185,7 +189,7 @@ def analyze_symbol(symbol: str, df_btc=None) -> dict:
     ob = fetch_orderbook(symbol)
     trades = fetch_trades(symbol, limit=200)
 
-    # ===== ⚠️ فحص البيانات الأساسية =====
+    # ===== فحص البيانات الأساسية =====
     if df_15m is None or df_1h is None or len(df_15m) < 50 or len(df_1h) < 50:
         print(f"⚠️ [{symbol}] بيانات أساسية مفقودة")
         return _empty_result(symbol, "فشل جلب 15m/1h")
@@ -196,17 +200,15 @@ def analyze_symbol(symbol: str, df_btc=None) -> dict:
     if trades is None:
         trades = []
 
-    # استخدم df_1h كبديل إذا df_4h فشل
     if df_4h is None or len(df_4h) < 50:
         df_4h = df_1h
 
-    # استخدم df_15m كبديل إذا df_5m فشل
     if df_5m is None or len(df_5m) < 20:
         df_5m = df_15m
 
     price = float(df_15m["close"].iloc[-1])
 
-    # ===== Regime Detection =====
+    # ===== Regime =====
     regime_info = detect_regime(df_1h)
     regime = regime_info["regime"]
     adx_val = regime_info.get("adx", 0)
@@ -342,45 +344,51 @@ def analyze_symbol(symbol: str, df_btc=None) -> dict:
         if r: reasons.append(r)
 
     # ============================================================
-    # تطبيق Regime multipliers
+    # Regime multipliers
     # ============================================================
     breakdown = {k: int(round(v * mult.get(k, 1.0))) for k, v in raw.items()}
     score = sum(breakdown.values())
 
     # ============================================================
-    # حساب Context Quality
+    # Context Quality
     # ============================================================
     cq = _context_quality(regime, adx_val, breakdown)
 
     # ============================================================
-    # 🎯 الفلترة المتدرجة — 5 مستويات
+    # 🎯 الفلترة المتدرجة — مع اتجاه واضح
     # ============================================================
 
     # المستوى 1: STRONG BUY
     if score >= 30 and cq >= 5:
         state = "STRONG BUY SETUP"
-        reasons.append(f"🎯 إشارة قوية: score={score}, cq={cq}")
+        reasons.append(f"🎯 إشارة شراء قوية: score={score}, cq={cq}")
 
     # المستوى 2: BUY SETUP
     elif score >= 22 and cq >= 2:
         state = "BUY SETUP"
-        reasons.append(f"✅ فرصة: score={score}, cq={cq}")
+        reasons.append(f"✅ فرصة شراء: score={score}, cq={cq}")
 
-    # المستوى 3: EARLY OPPORTUNITY
-    elif score >= 15 and cq >= 0:
-        state = "EARLY OPPORTUNITY"
-        warnings.append(f"⏳ فرصة مبكرة: score={score}, cq={cq}")
-        warnings.append("انتظر تأكيد قبل الدخول")
-
-    # المستوى 4: STRONG SELL
+    # المستوى 3: STRONG SELL
     elif score <= -30 and cq >= 5:
         state = "STRONG SELL SETUP"
         reasons.append(f"🔴 إشارة بيع قوية: score={score}, cq={cq}")
 
-    # المستوى 5: SELL SETUP
+    # المستوى 4: SELL SETUP
     elif score <= -22 and cq >= 2:
         state = "SELL SETUP"
         reasons.append(f"🔴 فرصة بيع: score={score}, cq={cq}")
+
+    # المستوى 5: EARLY BUY (فرصة شراء مبكرة)
+    elif score >= 15 and cq >= 0:
+        state = "EARLY BUY"
+        warnings.append(f"⏳ فرصة شراء مبكرة: score={score}, cq={cq}")
+        warnings.append("انتظر تأكيد قبل الدخول")
+
+    # المستوى 6: EARLY SELL (فرصة بيع مبكرة)
+    elif score <= -15 and cq >= 0:
+        state = "EARLY SELL"
+        warnings.append(f"⏳ فرصة بيع مبكرة: score={score}, cq={cq}")
+        warnings.append("انتظر تأكيد قبل الدخول")
 
     # WATCH
     else:
@@ -394,8 +402,8 @@ def analyze_symbol(symbol: str, df_btc=None) -> dict:
     # حساب المستويات
     # ============================================================
     levels = None
-    if state in ("STRONG BUY SETUP", "BUY SETUP", "EARLY OPPORTUNITY",
-                 "STRONG SELL SETUP", "SELL SETUP"):
+    if state in ("STRONG BUY SETUP", "BUY SETUP", "EARLY BUY",
+                 "STRONG SELL SETUP", "SELL SETUP", "EARLY SELL"):
         levels = calculate_levels(df_15m, state, symbol=symbol)
 
         if levels:
@@ -412,8 +420,16 @@ def analyze_symbol(symbol: str, df_btc=None) -> dict:
     if state == "STRONG BUY SETUP" and score < 30:
         state = "BUY SETUP"
     if state == "BUY SETUP" and score < 22:
-        state = "EARLY OPPORTUNITY"
-    if state == "EARLY OPPORTUNITY" and score < 15:
+        state = "EARLY BUY"
+    if state == "EARLY BUY" and score < 15:
+        state = "WATCH"
+        levels = None
+
+    if state == "STRONG SELL SETUP" and score > -30:
+        state = "SELL SETUP"
+    if state == "SELL SETUP" and score > -22:
+        state = "EARLY SELL"
+    if state == "EARLY SELL" and score > -15:
         state = "WATCH"
         levels = None
 
