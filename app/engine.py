@@ -29,6 +29,9 @@ def calculate_levels(df_15m, state, symbol="BTC/USDT"):
     R-Multiple: SL=-1R, TP1=+0.5R, TP2=+1R, TP3=+1.5R
     """
     try:
+        if df_15m is None or len(df_15m) == 0:
+            return None
+
         price = float(df_15m["close"].iloc[-1])
 
         SL_PCT = 2.0
@@ -87,32 +90,25 @@ def _safe_call(fn, *args, **kwargs):
 
 
 def _context_quality(regime, adx_val, breakdown):
-    """
-    حساب جودة السياق (Context Quality).
-    النطاق: -8 إلى +8
-    """
+    """جودة السياق (0-8)"""
     cq = 0
 
-    # Regime
     if regime == "trending": cq += 3
     elif regime == "neutral": cq += 1
     elif regime == "ranging": cq -= 1
     elif regime == "low_vol": cq -= 2
     elif regime == "high_vol": cq -= 2
 
-    # ADX
     if adx_val >= 30: cq += 3
     elif adx_val >= 25: cq += 2
     elif adx_val >= 20: cq += 1
     elif adx_val >= 15: cq += 0
     else: cq -= 1
 
-    # Order Flow
     of = breakdown.get("orderflow", 0)
     if of > 0: cq += 1
     elif of < -3: cq -= 1
 
-    # Volume
     vol = breakdown.get("volume", 0)
     if vol > 0: cq += 1
     elif vol < -2: cq -= 1
@@ -120,7 +116,27 @@ def _context_quality(regime, adx_val, breakdown):
     return cq
 
 
-def _build_result(symbol, price, score, state, breakdown, reasons, warnings, levels, regime_info):
+def _empty_result(symbol, reason="بيانات مفقودة"):
+    """نتيجة فارغة عند فشل جلب البيانات"""
+    return {
+        "symbol": symbol,
+        "price": 0,
+        "score": 0,
+        "state": "NO TRADE",
+        "breakdown": {
+            "trend": 0, "momentum": 0, "volume": 0,
+            "orderflow": 0, "structure": 0, "context": 0, "risk": 0,
+        },
+        "reasons": [],
+        "warnings": [reason],
+        "levels": None,
+        "regime": {"regime": "unknown", "adx": 0, "atr_pct": 0},
+    }
+
+
+def _build_result(symbol, price, score, state, breakdown, reasons, warnings,
+                  levels, regime_info):
+    """يبني النتيجة ويحفظ snapshot"""
     result = {
         "symbol": symbol,
         "price": round(price, 6),
@@ -161,6 +177,7 @@ def _build_result(symbol, price, score, state, breakdown, reasons, warnings, lev
 # Main Analysis
 # ============================================================
 def analyze_symbol(symbol: str, df_btc=None) -> dict:
+    # ===== جلب البيانات =====
     df_4h = fetch_ohlcv(symbol, "4h", limit=300)
     df_1h = fetch_ohlcv(symbol, "1h", limit=300)
     df_15m = fetch_ohlcv(symbol, "15m", limit=300)
@@ -168,8 +185,28 @@ def analyze_symbol(symbol: str, df_btc=None) -> dict:
     ob = fetch_orderbook(symbol)
     trades = fetch_trades(symbol, limit=200)
 
+    # ===== ⚠️ فحص البيانات الأساسية =====
+    if df_15m is None or df_1h is None or len(df_15m) < 50 or len(df_1h) < 50:
+        print(f"⚠️ [{symbol}] بيانات أساسية مفقودة")
+        return _empty_result(symbol, "فشل جلب 15m/1h")
+
+    if ob is None or not ob.get("bids") or not ob.get("asks"):
+        ob = {"bids": [], "asks": [], "timestamp": None}
+
+    if trades is None:
+        trades = []
+
+    # استخدم df_1h كبديل إذا df_4h فشل
+    if df_4h is None or len(df_4h) < 50:
+        df_4h = df_1h
+
+    # استخدم df_15m كبديل إذا df_5m فشل
+    if df_5m is None or len(df_5m) < 20:
+        df_5m = df_15m
+
     price = float(df_15m["close"].iloc[-1])
 
+    # ===== Regime Detection =====
     regime_info = detect_regime(df_1h)
     regime = regime_info["regime"]
     adx_val = regime_info.get("adx", 0)
@@ -183,9 +220,11 @@ def analyze_symbol(symbol: str, df_btc=None) -> dict:
     warnings = []
 
     # ============================================================
-    # جمع النقاط
+    # Trend
     # ============================================================
     for df, tf in [(df_4h, "4H"), (df_1h, "1H")]:
+        if df is None:
+            continue
         s, r = _safe_call(sig_price_above_ema200, df)
         raw["trend"] += s
         if r: reasons.append(f"[{tf}] {r}")
@@ -215,6 +254,9 @@ def analyze_symbol(symbol: str, df_btc=None) -> dict:
     if r and s < 0: warnings.append(r)
     elif r: reasons.append(r)
 
+    # ============================================================
+    # Momentum
+    # ============================================================
     for fn in (sig_macd_cross, sig_rsi_zone, sig_roc_positive):
         s, r = _safe_call(fn, df_15m)
         raw["momentum"] += s
@@ -228,6 +270,9 @@ def analyze_symbol(symbol: str, df_btc=None) -> dict:
     raw["momentum"] += s
     if r: reasons.append(f"[15M] {r}")
 
+    # ============================================================
+    # Volume
+    # ============================================================
     s, r = _safe_call(sig_volume_ratio, df_15m)
     raw["volume"] += s
     if r: reasons.append(f"[15M] {r}")
@@ -240,6 +285,9 @@ def analyze_symbol(symbol: str, df_btc=None) -> dict:
     raw["volume"] += s
     if r: reasons.append(f"[15M] {r}")
 
+    # ============================================================
+    # Order Flow
+    # ============================================================
     s, r = _safe_call(sig_orderbook_imbalance, ob)
     raw["orderflow"] += s
     if r: reasons.append(r)
@@ -248,6 +296,9 @@ def analyze_symbol(symbol: str, df_btc=None) -> dict:
     raw["orderflow"] += s
     if r: reasons.append(r)
 
+    # ============================================================
+    # Structure
+    # ============================================================
     s, r = _safe_call(sig_broke_resistance, df_15m)
     raw["structure"] += s
     if r: reasons.append(f"[15M] {r}")
@@ -260,11 +311,16 @@ def analyze_symbol(symbol: str, df_btc=None) -> dict:
     raw["structure"] += s
     if r: reasons.append(f"[15M] {r}")
 
-    p_score, p_reasons, p_warnings = scan_patterns(df_15m)
-    raw["structure"] += p_score
-    reasons.extend(p_reasons)
-    warnings.extend(p_warnings)
+    # Patterns
+    try:
+        p_score, p_reasons, p_warnings = scan_patterns(df_15m)
+        raw["structure"] += p_score
+        reasons.extend(p_reasons)
+        warnings.extend(p_warnings)
+    except Exception as e:
+        print(f"[patterns {symbol}] {e}")
 
+    # Candlestick Patterns
     for fn in (sig_hammer, sig_shooting_star, sig_bullish_engulfing,
                sig_bearish_engulfing, sig_pin_bar):
         s, r = _safe_call(fn, df_15m)
@@ -273,6 +329,9 @@ def analyze_symbol(symbol: str, df_btc=None) -> dict:
             if s > 0: reasons.append(r)
             else: warnings.append(r)
 
+    # ============================================================
+    # Context
+    # ============================================================
     if df_btc is not None and symbol != BTC_REFERENCE:
         s, r = _safe_call(sig_btc_trend, df_btc)
         raw["context"] += s
@@ -298,28 +357,28 @@ def analyze_symbol(symbol: str, df_btc=None) -> dict:
     # ============================================================
 
     # المستوى 1: STRONG BUY
-    if score >= 22 and cq >= 5:
+    if score >= 30 and cq >= 5:
         state = "STRONG BUY SETUP"
         reasons.append(f"🎯 إشارة قوية: score={score}, cq={cq}")
 
     # المستوى 2: BUY SETUP
-    elif score >= 15 and cq >= 2:
+    elif score >= 22 and cq >= 2:
         state = "BUY SETUP"
         reasons.append(f"✅ فرصة: score={score}, cq={cq}")
 
     # المستوى 3: EARLY OPPORTUNITY
-    elif score >= 8 and cq >= 0:
+    elif score >= 15 and cq >= 0:
         state = "EARLY OPPORTUNITY"
         warnings.append(f"⏳ فرصة مبكرة: score={score}, cq={cq}")
         warnings.append("انتظر تأكيد قبل الدخول")
 
     # المستوى 4: STRONG SELL
-    elif score <= -22 and cq >= 5:
+    elif score <= -30 and cq >= 5:
         state = "STRONG SELL SETUP"
         reasons.append(f"🔴 إشارة بيع قوية: score={score}, cq={cq}")
 
     # المستوى 5: SELL SETUP
-    elif score <= -15 and cq >= 2:
+    elif score <= -22 and cq >= 2:
         state = "SELL SETUP"
         reasons.append(f"🔴 فرصة بيع: score={score}, cq={cq}")
 
